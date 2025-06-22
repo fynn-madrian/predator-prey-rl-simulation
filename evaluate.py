@@ -1,18 +1,21 @@
 import tensorflow as tf
 import os
 import numpy as np
+import random
 from custom_environment import CustomEnvironment
 from algorithms import load_model, get_model
 from helpers import convert_observation, collides_with
 
 evaluation_config = {
     "map_size": 100,
+    "base_population_per_group": 1,
+    "reproduction_cooldown": 100,
     "max_age": 5_000_000,
-    "scenario": "flee",
+    "scenario": "full",
     "map_config": {
-        "Rock": 2,
-        "River": 0,
-        "Field": 0,
+        "Rock": 6,
+        "River": 1,
+        "Field": 1,
         "Forest": 0,
         "Field_food_range": [10, 20],
         "Field_base_radius": 12,
@@ -32,6 +35,7 @@ evaluation_config = {
     "sequence_length": 32,
     "max_speed": 7.5,
     "stale_truncation": 100,
+    "max_agent_count": 2,
 }
 
 
@@ -43,13 +47,14 @@ evaluation_config = {
 
 
 def evaluate(seed, steps=1000, log_dir=None):
+
     # Disable standard logging; only enable if log_dir is provided
     run_config = evaluation_config.copy()
     run_config["render_enabled"] = bool(log_dir)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     env = CustomEnvironment(config=run_config, seed=seed, folder_path=log_dir)
-    observations, infos = env.reset(seed=seed)
+    observations, infos = env.reset()
 
     total_reward = 0
     total_steps = 0
@@ -58,7 +63,7 @@ def evaluate(seed, steps=1000, log_dir=None):
     time_alive = 0
     total_food_collected = 0
 
-    model_path = "logs/2025-06-19-10-35-46/models/prey/agent_2_model_5000000.weights.h5"
+    model_path = "good_flee/models/prey/agent_2_model_5000000.weights.h5"
     if env.scenario == "gather" or env.scenario == "navigate":
         predators = []
         for agent in env.agent_data.values():
@@ -115,7 +120,7 @@ def evaluate(seed, steps=1000, log_dir=None):
         elif env.scenario == "full":
             # Combine navigate and flee metrics
             prey_pos = env.agent_data[prey_agent.ID].position
-            goal_dist = np.linalg.norm(prey_pos - env.goal_pos)
+            goal_dist = 0
             total_distance_to_goal += goal_dist
             predator_positions = [
                 agent.position for agent in env.agent_data.values() if agent.group == 0]
@@ -146,7 +151,7 @@ def evaluate(seed, steps=1000, log_dir=None):
 def aggregate_and_log(num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
     results = []
     for seed in range(num_runs):
-        res = evaluate(seed, steps)
+        res = evaluate(seed, steps, log_dir=log_root)
         results.append((seed, res))
     # Compute average metrics
     metrics_sum = {}
@@ -170,3 +175,126 @@ def aggregate_and_log(num_runs=100, steps=1000, top_k=5, log_root="evaluation_lo
 
 if __name__ == "__main__":
     aggregate_and_log()
+    exit()
+    # create animation for top seeps
+
+    import shutil
+    import json
+    import cv2
+    import pandas as pd
+
+    from custom_environment import Agent
+    from render import render
+
+    def reconstruct_objects(obj_dicts):
+        from environment_object import River, Field, Rock, Forest
+        objs = []
+        for obj in obj_dicts:
+            if obj["type"] == "River":
+                instance = River(obj["points"], radius=obj["radius"])
+            elif obj["type"] == "Field":
+                instance = Field(obj["position"], obj["food"],
+                                 obj["max_food"], radius=obj["radius"])
+            elif obj["type"] == "Rock":
+                instance = Rock(obj["position"], radius=obj["radius"])
+            elif obj["type"] == "Forest":
+                instance = Forest(obj["position"], radius=obj["radius"])
+            objs.append(instance)
+        return objs
+
+    def create_video_for_run(log_dir, start_step=0, end_step=1000):
+        tmp_dir = "tmp_visualizations"
+        os.makedirs(tmp_dir, exist_ok=True)
+
+        env_path = os.path.join(log_dir, "environment.jsonl")
+
+        env_data = []
+        with open(env_path, "r") as f:
+            for idx, line in enumerate(f):
+                entry = json.loads(line)
+                entry["step"] = idx
+                if start_step <= idx <= end_step:
+                    env_data.append(entry)
+                if idx == end_step:
+                    break
+
+        species_dirs = ["prey", "predator"]
+        agent_data_by_id = {}
+
+        for species_dir in species_dirs:
+            species = 0 if species_dir == "predator" else 1
+            species_path = os.path.join(log_dir, species_dir)
+            if not os.path.isdir(species_path):
+                continue
+            for file in os.listdir(species_path):
+                agent_id = file.replace("agent_", "").replace(".jsonl", "")
+                file_path = os.path.join(species_path, file)
+                agent_records = []
+                with open(file_path, "r") as af:
+                    for idx, line in enumerate(af):
+                        if start_step <= idx <= end_step:
+                            record = json.loads(line)
+                            record["step"] = idx
+                            agent_records.append(record)
+                        if idx > end_step:
+                            break
+                if agent_records:
+                    df = pd.DataFrame(agent_records)
+                    agent_data_by_id[agent_id] = [df, species]
+
+        for env_entry in env_data:
+            step = env_entry["step"]
+            objects = reconstruct_objects(env_entry["objects"])
+            goal = env_entry.get("goal", None)
+
+            agents = {}
+            for agent_id, (df, species) in agent_data_by_id.items():
+                row = df[df["step"] == step]
+                if row.empty:
+                    continue
+                row = row.iloc[0]
+                agent = Agent(
+                    group=species,
+                    position=row["position"],
+                    age=row["age"],
+                    facing=row["facing"],
+                    max_speed=5,
+                    max_age=10000,
+                    ID=int(agent_id)
+                )
+                agent.velocity = row["velocity"]
+                agents[agent_id] = agent
+
+            if agents or objects:
+                render(objects, agents,
+                       savedir=os.path.join(tmp_dir, f"{step}.png"), goal=goal)
+
+        images = [img for img in os.listdir(tmp_dir) if img.endswith(".png")]
+        images = [img for img in images if start_step <=
+                  int(img.split(".")[0]) <= end_step]
+        images.sort(key=lambda x: int(x.split(".")[0]))
+
+        if not images:
+            print(
+                f"No images found for run in {log_dir}, skipping video generation.")
+            return
+
+        frame = cv2.imread(os.path.join(tmp_dir, images[0]))
+        height, width, layers = frame.shape
+        video_name = os.path.join(log_dir, f'video_{start_step}.avi')
+
+        video = cv2.VideoWriter(
+            video_name, cv2.VideoWriter_fourcc(*'XVID'), 30, (width, height))
+
+        for image in images:
+            video.write(cv2.imread(os.path.join(tmp_dir, image)))
+
+        video.release()
+        cv2.destroyAllWindows()
+        shutil.rmtree(tmp_dir)
+
+    for run in os.listdir("evaluation_logs"):
+        log_dir = os.path.join("evaluation_logs", run)
+        if os.path.isdir(log_dir) and "episode_" in run:
+            print(f"Creating video for {log_dir}")
+            create_video_for_run(log_dir)
