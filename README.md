@@ -14,3 +14,12 @@ Ziel ist es, die Lernfähigkeit und Generalisierbarkeit von Agentenverhalten in 
    python -m venv venv
    source venv/bin/activate      # Für Linux/macOS
    venv\Scripts\activate         # Für Windows
+2. **Abhängigkeiten installieren**
+   ```bash
+   pip install -r requirements.txt
+3. **Konfiguration anpassen*
+   Config.json enthält alle Parameter zum Aufbau des Environments und zum Szenario. Trainingsparameter müssen in algorithms.py angepasst      werden
+
+## Training
+
+
