@@ -90,6 +90,7 @@ class CustomEnvironment(ParallelEnv):
         self.model_save_path = os.path.join(self.folder_path, "models")
         self.scenario = self.config.get("scenario", "navigate")
         self.agent_data = self.generate_agents(self.scenario)
+        self.collision_penalty = self.config.get("collision_penalty", -1)
         if self.scenario == "navigate":
 
             self.start_pos = np.array(
@@ -99,7 +100,6 @@ class CustomEnvironment(ParallelEnv):
             # Reward weights
             self.time_penalty = self.config.get("time_penalty", 0.025)
             self.progress_scaling = self.config.get("progress_scaling", 1.5)
-            self.collision_penalty = self.config.get("collision_penalty", -1)
             self.goal_bonus = self.config.get("goal_bonus", 20.0)
 
     def _sample_start_goal(self):
@@ -597,7 +597,6 @@ class CustomEnvironment(ParallelEnv):
         dist_all[has_oob] = d_grid[first_oob[has_oob]]
         code_all[has_oob] = 1      # code 1 = map edge
 
-        # ----------------------------------------------------------- other AGENTS
         others = [o for o in self.agent_data.values() if o.ID != agent.ID]
         if others:
             op = np.array([o.position for o in others], np.float32)
@@ -1062,7 +1061,7 @@ class Agent:
 
         if self.env.scenario == "navigate":
             curr_pos = self.position
-            reward -= self.reward_penalty
+            reward = - self.reward_penalty
             self.reward_penalty = 0.0
             # attempt to get last position; if not available, use current
             if len(self.previous_position) >= 2:
