@@ -9,9 +9,6 @@ import numpy as np
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Polygon
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. Global Matplotlib style tweaks
-# ──────────────────────────────────────────────────────────────────────────────
 plt.rcParams.update(
     {
         "figure.dpi": 110,
@@ -24,9 +21,6 @@ plt.rcParams.update(
     }
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. Load scenario configuration (if present)
-# ──────────────────────────────────────────────────────────────────────────────
 CONFIG_PATH = Path("config.json")
 config: Dict[str, Any] = {}
 if CONFIG_PATH.exists():
@@ -36,12 +30,9 @@ GRID_SIZE: int = int(config.get("map_size", 100))
 VISION_RANGE: int = int(config.get("vision_range", 20))
 TASK_NAME: str = str(config.get("scenario", "gather")).capitalize()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. Colour palette
-# ──────────────────────────────────────────────────────────────────────────────
 GROUP_COLORS = np.array(
     [
-        [213, 94, 0],   # predator – rust
+        [213, 94, 0],   # predator – red
         [0, 114, 178],  # prey – blue
     ]
 ) / 255.0
@@ -56,9 +47,6 @@ OEDGE = {"ec": "#333333", "lw": 0.6, "zorder": 3}
 
 
 def first_hit_distance(origin, direction, objects, max_dist):
-    """Return the distance along *direction* until first obstacle or *max_dist*.
-    Supports circles, rectangles (via their center/radius), AND polyline obstacles
-    by sampling each segment with overlapping circles."""
     min_t = max_dist
     ox, oy = origin
     dx, dy = direction
@@ -141,7 +129,6 @@ def render(
     dpi: int | None = None,
     tick_step: int = 25,
 ):
-    """Render the current state and optionally save to *savedir*."""
 
     if not hasattr(render, "_initialised"):
         fig = plt.figure(figsize=(12, 8), constrained_layout=False)
@@ -162,21 +149,18 @@ def render(
         render._ax_legend = ax_legend
         render._initialised = True
 
-    fig = render._fig  # type: ignore[attr-defined]
-    ax = render._ax_map  # type: ignore[attr-defined]
-    legend_ax = render._ax_legend  # type: ignore[attr-defined]
+    fig = render._fig
+    ax = render._ax_map
+    legend_ax = render._ax_legend
 
-    # ───────────────────────────── Map axes ──────────────────────────────
     ax.clear()
     ax.set_facecolor("#F9F6F4")
     fig.patch.set_facecolor("white")
     ax.set_axisbelow(True)
 
-    # 1) Draw FOV polygons
     for ag in agents.values():
         ax.add_patch(fov_patch(ag, objects))
 
-    # 2) Static map objects
     for obj in objects:
         pos, rad = obj.position, obj.radius
         col = OBJECT_COLORS.get(obj.__class__.__name__, "#808080")
@@ -199,37 +183,29 @@ def render(
             )
 
         elif obj.shape == "polyline":
-            # Draw the river as densely-sampled overlapping circles
-            # shape (N,2) in (row, col) coords
             pts = np.asarray(obj.points)
-            # Compute segment lengths and cumulative positions
             deltas = np.diff(pts, axis=0)
             seg_lens = np.linalg.norm(deltas, axis=1)
             cumlen = np.concatenate([[0.0], np.cumsum(seg_lens)])
             total_len = cumlen[-1]
             if total_len == 0:
-                # Degenerate case: just one circle
                 center = pts[0]
                 ax.add_patch(plt.Circle((center[1], center[0]), obj.radius,
                                         fc=col, alpha=0.8, ec="none", zorder=3))
             else:
-                # Sampling step = half the radius (you can tweak this)
                 step = obj.radius * 0.5
                 n_samples = max(int(np.ceil(total_len / step)) + 1, 2)
                 sample_ds = np.linspace(0.0, total_len, n_samples)
                 for d in sample_ds:
-                    # find which segment we're in
                     idx = np.searchsorted(cumlen, d, side="right") - 1
                     idx = np.clip(idx, 0, len(seg_lens)-1)
                     local_t = (d - cumlen[idx]) / \
                         (seg_lens[idx] if seg_lens[idx] > 0 else 1)
-                    # interpolate in data coords
                     p = (1 - local_t)*pts[idx] + local_t*pts[idx+1]
                     ax.add_patch(
                         plt.Circle((p[1], p[0]), obj.radius,
                                    fc=col, alpha=0.8, ec="none", zorder=3)
                     )
-    # 3) Agents – trail, body, facing line
     for ag in agents.values():
         pos = np.asarray(ag.position, dtype=float)
         clr = GROUP_COLORS[int(ag.group)]
@@ -293,7 +269,6 @@ def render(
 
     ax.set_title(f"Scenario – {TASK_NAME}", weight="bold", fontsize=22, pad=18)
 
-    # ───────────────────────── Legend axes ────────────────────────────
     legend_ax.clear()
     legend_ax.axis("off")
 

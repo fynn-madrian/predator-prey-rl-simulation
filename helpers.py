@@ -13,7 +13,7 @@ if config_path and os.path.exists(config_path):
 max_age = config.get("max_age")
 reproduction_cooldown = config.get("reproduction_cooldown")
 max_speed = config.get("max_speed")
-map_size = config.get("map_size", 100)  # Default to 1000 if not specified
+map_size = config.get("map_size", 100)
 
 
 def collides_with(obj, point):

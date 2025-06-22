@@ -61,13 +61,11 @@ for filename in os.listdir("visualizations"):
     except Exception as e:
         print(f"Error deleting file {file_path}: {e}")
 
-# Helper to restore environment objects
-
 
 def reconstruct_objects(obj_dicts):
     objs = []
     for obj in obj_dicts:
-        cls = obj["type"]  # dynamically get the class
+        cls = obj["type"]
         if obj["type"] == "River":
             instance = River(obj["points"], radius=obj["radius"])
         elif obj["type"] == "Field":
@@ -81,16 +79,13 @@ def reconstruct_objects(obj_dicts):
     return objs
 
 
-# Render each step
 for env_entry in env_data:
     step = env_entry["step"]
     print(f"Rendering step {step}")
 
-    # Rebuild objects for the current step
     objects = reconstruct_objects(env_entry["objects"])
     goal = env_entry.get("goal", None)
 
-    # Build agents for current step
     agents = {}
     for agent_id, (df, species) in agent_data_by_id.items():
         row = df[df["step"] == step]
@@ -117,32 +112,26 @@ for env_entry in env_data:
         print(f"No agents or objects to render at step {step}, skipping.")
 
 
-# Set your desired framerate (frames per second)
 framerate = 30  # Adjust this value to control video speed
 
 image_folder = 'visualizations'
 video_name = f'video_{start_step}.avi'
 
-# Get all .png images from the folder
 images = [img for img in os.listdir(image_folder) if img.endswith(".png")]
 images = [img for img in images if start_step <=
           int(img.split(".")[0]) <= end_step]
 images.sort(key=lambda x: int(x.split(".")[0]))
 print(f"Found {len(images)} images for video creation: {images[:5]}...")
 
-# Read the first frame to get video dimensions
 frame = cv2.imread(os.path.join(image_folder, images[0]))
 height, width, layers = frame.shape
 
-# Create video writer with adjustable framerate
 video = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(
     *'XVID'), framerate, (width, height))
 
-# Add images to the video
 for image in images:
     video.write(cv2.imread(os.path.join(image_folder, image)))
 
-# Release resources
 cv2.destroyAllWindows()
 video.release()
 

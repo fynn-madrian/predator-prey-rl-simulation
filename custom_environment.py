@@ -23,16 +23,7 @@ SPIN_BIN_VALUES = [-0.75,  0.0, 0.75]
 
 
 class CustomEnvironment(ParallelEnv):
-
-    # ------------------------------------------------------------------
-    # Cheap grid‑based A* for predator way‑finding (5‑unit resolution)
-    # ------------------------------------------------------------------
     def find_path(self, start, goal, resolution=5):
-        """t
-        Return a list of way‑points (including start & goal) on a coarse
-        grid that avoids impassable objects.  If no path is found,
-        returns None.
-        """
         if resolution <= 0:
             resolution = 5
         grid_step = float(resolution)
@@ -52,7 +43,6 @@ class CustomEnvironment(ParallelEnv):
         if start_cell == goal_cell:
             return [start, goal]
 
-        # Pre‑compute blocked cells
         blocked = set()
         for x in range(grid_w):
             for y in range(grid_h):
@@ -106,6 +96,7 @@ class CustomEnvironment(ParallelEnv):
 
         # No path
         return None
+
     metadata = {"name": "plutonian_insects"}
 
     def __init__(self, config_path=None, config=None, folder_path=None, **kwargs):
@@ -133,17 +124,13 @@ class CustomEnvironment(ParallelEnv):
         self.map_size = self.config.get("map_size")
         self.map_config = self.config.get("map_config")
 
-        self.init_agents_per_group = self.config.get(
-            "base_population_per_group")
         self.objects = self.generate_map()
-
         self.max_age = self.config.get("max_age")
         self.max_speed = self.config.get("max_speed")
         self.predator_fov = self.config.get("predator_fov")
         self.prey_fov = self.config.get("prey_fov")
         self.vision_rays = self.config.get("vision_rays")
         self.vision_range = self.config.get("vision_range")
-        self.max_agent_count = self.config.get("max_agent_count")
         self.ray_all_type_mapping = {
             0: "none",
             1: "out_of_bounds",
@@ -162,14 +149,9 @@ class CustomEnvironment(ParallelEnv):
             "agent_collision_radius")
         self.group_paths = {0: "predator", 1: "prey"}
 
-        self.init_agents_per_group = kwargs.get(
-            "base_population_per_group", self.init_agents_per_group)
-
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.stale_truncation = config.get("stale_truncation")
         self.step_count = 0
         self.goal_pos = None
-        # Flag set each step before regeneration to record whether any field reached zero food
         self.any_field_depleted = False
         if folder_path is None:
             self.folder_path = os.path.join(
@@ -177,8 +159,7 @@ class CustomEnvironment(ParallelEnv):
         else:
             self.folder_path = folder_path
         self.model_save_path = os.path.join(self.folder_path, "models")
-        self.agent_data = self.generate_agents(
-            self.init_agents_per_group, group_count=2)
+        self.agent_data = self.generate_agents(self.scenario)
         self.scenario = self.config.get("scenario", "navigate")
         if self.scenario == "navigate":
 
@@ -510,24 +491,33 @@ class CustomEnvironment(ParallelEnv):
 
         return next_observations, rewards, terminations, truncations, infos
 
-    def generate_agents(self, init_agents_per_group, group_count=None):
+    def generate_agents(self, scenario):
         agents = {}
-        group_count = group_count if group_count is not None else 2
+        location = np.array(
+            [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
+        while any([not obj.is_passable and collides_with(obj, location) for obj in self.objects]):
+            location = np.array(
+                [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
 
-        for i in range(group_count):
-            for j in range(init_agents_per_group):
+        model = get_model(log_dir=self.folder_path)
+
+        new_agent = Agent(1, location, env=self, model=model,
+                          max_speed=self.max_speed, max_age=self.max_age)
+
+        agents[str(new_agent.ID)] = new_agent
+
+        if scenario == "full" or scenario == "flee":
+            # Add a predator agent
+            location = np.array(
+                [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
+            while any([not obj.is_passable and collides_with(obj, location) for obj in self.objects]):
                 location = np.array(
                     [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
-                while any([not obj.is_passable and collides_with(obj, location) for obj in self.objects]):
-                    location = np.array(
-                        [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
 
-                model = get_model(log_dir=self.folder_path)
-
-                new_agent = Agent(i, location, env=self, model=model,
-                                  max_speed=self.max_speed, max_age=self.max_age)
-
-                agents[str(new_agent.ID)] = new_agent
+            predator_model = load_model(self.model_save_path, "predator")
+            new_predator = Agent(0, location, env=self,
+                                 model=predator_model, max_speed=self.max_speed, max_age=self.max_age)
+            agents[str(new_predator.ID)] = new_predator
 
         return agents
 

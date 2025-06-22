@@ -8,8 +8,6 @@ import tensorflow as tf
 
 simple_config = {
     "map_size": 100,
-    "base_population_per_group": 1,
-    "reproduction_cooldown": 100,
     "max_age": 5_000_000,
     "scenario": "flee",
     "map_config": {
@@ -34,8 +32,6 @@ simple_config = {
     "mutation_rate": 0.0,
     "sequence_length": 32,
     "max_speed": 7.5,
-    "stale_truncation": 100,
-    "max_agent_count": 2,
 }
 
 env = CustomEnvironment(config=simple_config)

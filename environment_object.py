@@ -16,7 +16,7 @@ class environment_object():
     def to_dict(self):
         return {
             "type": self.__class__.__name__,
-            **vars(self)  # grabs all instance attributes dynamically
+            **vars(self)
         }
 
 

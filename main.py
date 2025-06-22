@@ -30,8 +30,6 @@ if __name__ == "__main__":
             config = json.load(f)
 
     render_enabled = config.get("render_enabled", False)
-    mutation_rate = config.get("mutation_rate")
-    base_population_per_group = config.get("base_population_per_group")
     env = CustomEnvironment(config=config)
 
     observations, _ = env.reset()
@@ -39,13 +37,6 @@ if __name__ == "__main__":
 
     step = 0
 
-    if env.scenario == "gather" or env.scenario == "navigate":
-        predators = []
-        for agent in env.agent_data.values():
-            if agent.group == 0:
-                predators.append(agent)
-        for agent in predators:
-            env.remove_agent(agent.ID)
     prey_agents = [agent for agent in env.agent_data.values()
                    if agent.group == 1]
     prey = prey_agents[0] if prey_agents else None

@@ -1,7 +1,6 @@
 {
   "map_size": 100,
   "scenario": "full",
-  "base_population_per_group": 1,
   "max_age": 480,
   "map_config": {
     "Rock": 6,
@@ -18,8 +17,6 @@
     "obstacle_count": 2,
     "Rock_radius": 2.0
   },
-  "start_pos": [5, 5],
-  "goal_pos": [45, 45],
   "time_penalty": 0.01,
   "progress_scaling": 1.5,
   "collision_penalty": -3.0,
