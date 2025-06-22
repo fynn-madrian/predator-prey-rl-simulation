@@ -1,0 +1,105 @@
+observation_ids:
+
+0: empty
+1: blocked
+2: predator
+3: prey
+4: river
+5: rock
+6: field
+7: forest
+
+
+flee:
+
+    def get_nearest_food_vector(self):
+        max_distance = self.env.map_size * (2 ** 0.5)
+        # Scaled agent velocity magnitude for help vector
+        vel_mag = np.linalg.norm(self.velocity)
+        scaled_velocity = vel_mag / (self.max_speed + 1e-8)
+
+        # predator: vectorized nearest-prey
+        prey = [a for a in self.env.agent_data.values() if a.group == 1]
+        if self.group == 0:
+            if not prey:
+                direction = np.array([0.0, 0.0], dtype=np.float32)
+                return direction, 0.0, 0.0
+            positions = np.vstack([a.position for a in prey])
+            dists = np.linalg.norm(positions - self.position, axis=1)
+            idx = np.argmin(dists)
+            closest = prey[idx]
+            closest_dist = dists[idx]
+            direction = (closest.position - self.position) / \
+                (closest_dist + 1e-8)
+            # scaled prey velocity magnitude
+            prey_vel_mag = np.linalg.norm(closest.velocity)
+            scaled_prey_vel = prey_vel_mag / (closest.max_speed + 1e-8)
+            return direction, closest_dist / max_distance, scaled_prey_vel
+
+        # prey: vectorized nearest-predator
+        predators = [a for a in self.env.agent_data.values() if a.group == 0]
+        if not predators:
+            direction = np.array([0.0, 0.0], dtype=np.float32)
+            return direction, 0.0, 0.0
+        positions = np.vstack([a.position for a in predators])
+        dists = np.linalg.norm(positions - self.position, axis=1)
+        idx = np.argmin(dists)
+        closest = predators[idx]
+        closest_dist = dists[idx]
+        direction = (closest.position - self.position) / (closest_dist + 1e-8)
+        # scaled predator velocity magnitude
+        pred_vel_mag = np.linalg.norm(closest.velocity)
+        scaled_pred_vel = pred_vel_mag / (closest.max_speed + 1e-8)
+        return direction, closest_dist / max_distance, scaled_pred_vel
+
+
+
+
+ # No-hit reward shaping: bigger reward the longer prey avoids hits
+        if self.group == 1:
+            if penalty_amount > 0:
+                self.steps_since_hit = 0
+            else:
+                self.steps_since_hit += 1
+            no_hit_bonus = min(self.steps_since_hit * self.no_hit_reward_increment,
+                               self.no_hit_reward_cap)
+            reward += no_hit_bonus
+        return reward
+
+
+
+explore:
+    def get_nearest_food_vector(self):
+        # for backward compatibility: fallback to goal if navigation
+        if getattr(self.env, "scenario", None) == "navigation":
+            return self.get_nearest_goal_vector()
+        # original nearest-object fallback
+        objs = [o for o in self.env.objects if not getattr(
+            o, 'is_passable', False)]
+        if not objs:
+            return np.zeros(2, dtype=float), 0.0, 0.0
+        positions = np.vstack([o.position for o in objs])
+        radii = np.array([o.radius for o in objs], dtype=float)
+        dists = np.linalg.norm(positions - self.position, axis=1)
+        idx = np.argmin(dists)
+        nearest = objs[idx]
+        distance = dists[idx]
+        vec = nearest.position - self.position
+        direction = vec / (distance + 1e-8)
+        norm_radius = nearest.radius / self.env.map_size
+        return direction, float(distance), norm_radius
+
+    def get_nearest_goal_vector(self):
+        # identical to get_nearest_food_vector but uses env.goal_pos
+        if getattr(self.env, "scenario", None) == "navigation":
+            vec = self.env.goal_pos - self.position
+            dist = np.linalg.norm(vec)
+            direction = vec / (dist + 1e-8)
+            # nearest obstacle radius normalised; reuse helper for passable objects
+            obstacles = [o for o in self.env.objects if not getattr(
+                o, "is_passable", False)]
+            min_r = min((o.radius for o in obstacles), default=0.0)
+            norm_radius = min_r / self.env.map_size if self.env.map_size else 0.0
+            return direction, float(dist), norm_radius
+        # fallback to existing method
+        return self.get_nearest_food_vector()
