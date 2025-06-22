@@ -66,7 +66,8 @@ class CustomEnvironment(ParallelEnv):
             4: "Rock",
             5: "Field",
         }
-        self.ray_all_type_mapping_inv = {v: k for k, v in self.ray_all_type_mapping.items()}
+        self.ray_all_type_mapping_inv = {
+            v: k for k, v in self.ray_all_type_mapping.items()}
         self.all_type_count = len(self.ray_all_type_mapping)
 
         self.sequence_length = self.config.get("sequence_length")
@@ -96,10 +97,10 @@ class CustomEnvironment(ParallelEnv):
             self.goal_pos = np.array(
                 self.config.get("goal_pos", [self.map_size-1, self.map_size-1]), dtype=np.float32)
             # Reward weights
-            self.time_penalty = self.config.get("time_penalty", 0.01)
-            self.progress_scaling = self.config.get("progress_scaling", 1.0)
-            self.collision_penalty = self.config.get("collision_penalty", -0.5)
-            self.goal_bonus = self.config.get("goal_bonus", 10.0)
+            self.time_penalty = self.config.get("time_penalty", 0.025)
+            self.progress_scaling = self.config.get("progress_scaling", 1.5)
+            self.collision_penalty = self.config.get("collision_penalty", -1)
+            self.goal_bonus = self.config.get("goal_bonus", 20.0)
 
     def _sample_start_goal(self):
 
@@ -452,12 +453,13 @@ class CustomEnvironment(ParallelEnv):
 
             if blocked:
                 # Try minor detours: left/right/orthogonal
-                perp = np.array([-direction[1], direction[0]]) * step_size * 0.75
+                perp = np.array([-direction[1], direction[0]]
+                                ) * step_size * 0.75
                 for offset in [perp, -perp]:
                     detour = current + direction * step_size + offset
                     if np.all(0 <= detour) and np.all(detour < self.map_size):
                         if not any(not getattr(obj, "is_passable", True) and
-                                collides_with(obj, detour) for obj in self.objects):
+                                   collides_with(obj, detour) for obj in self.objects):
                             next_point = detour
                             break
                 else:
@@ -495,7 +497,8 @@ class CustomEnvironment(ParallelEnv):
                 location = np.array(
                     [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
 
-            new_predator = Agent(0, location, env=self, max_speed=self.max_speed, max_age=self.max_age)
+            new_predator = Agent(0, location, env=self,
+                                 max_speed=self.max_speed, max_age=self.max_age)
             agents[str(new_predator.ID)] = new_predator
 
         return agents
@@ -572,36 +575,40 @@ class CustomEnvironment(ParallelEnv):
     def cast_rays(self, agent):
         N, R, S = self.vision_rays, self.vision_range, 20
         ray_thick = 1.0
-        fov = np.deg2rad(self.predator_fov if agent.group == 0 else self.prey_fov)
+        fov = np.deg2rad(self.predator_fov if agent.group ==
+                         0 else self.prey_fov)
 
         base_ang = np.arctan2(-agent.facing[1], agent.facing[0])
-        angles   = np.linspace(-fov/2, fov/2, N) + base_ang
-        dirs     = np.stack([np.cos(angles), -np.sin(angles)], axis=1)
-        d_grid   = np.linspace(0.1, R, S, dtype=np.float32)
-        pts      = agent.position[None, None, :] + dirs[:, None, :] * d_grid[None,:,None]
+        angles = np.linspace(-fov/2, fov/2, N) + base_ang
+        dirs = np.stack([np.cos(angles), -np.sin(angles)], axis=1)
+        d_grid = np.linspace(0.1, R, S, dtype=np.float32)
+        pts = agent.position[None, None, :] + \
+            dirs[:, None, :] * d_grid[None, :, None]
 
         # ------------------------------------------------------------------ OOB
         dist_all = np.full(N, R, np.float32)
         code_all = np.zeros(N, np.int32)
         fill_pct = np.zeros(N, np.float32)
 
-        mask_oob  = (pts[...,0] < 0) | (pts[...,0] >= self.map_size) | \
-                    (pts[...,1] < 0) | (pts[...,1] >= self.map_size)
+        mask_oob = (pts[..., 0] < 0) | (pts[..., 0] >= self.map_size) | \
+            (pts[..., 1] < 0) | (pts[..., 1] >= self.map_size)
         first_oob = mask_oob.argmax(1)
-        has_oob   = mask_oob.any(1)
+        has_oob = mask_oob.any(1)
         dist_all[has_oob] = d_grid[first_oob[has_oob]]
         code_all[has_oob] = 1      # code 1 = map edge
 
         # ----------------------------------------------------------- other AGENTS
-        others   = [o for o in self.agent_data.values() if o.ID != agent.ID]
+        others = [o for o in self.agent_data.values() if o.ID != agent.ID]
         if others:
-            op    = np.array([o.position for o in others], np.float32)
-            orad  = self.agent_detection_radius * np.ones(len(others), np.float32)
-            ocod  = np.array([2 if o.group == 0 else 3 for o in others], np.int32)
+            op = np.array([o.position for o in others], np.float32)
+            orad = self.agent_detection_radius * \
+                np.ones(len(others), np.float32)
+            ocod = np.array(
+                [2 if o.group == 0 else 3 for o in others], np.int32)
 
             hit_s, hit_o = first_hit_circles(pts, op, orad, ray_thick)
             hit_mask = hit_s != -1
-            idxs     = np.where(hit_mask & (code_all == 0))[0]
+            idxs = np.where(hit_mask & (code_all == 0))[0]
             dist_all[idxs] = d_grid[hit_s[idxs]]
             code_all[idxs] = ocod[hit_o[idxs]]
 
@@ -611,16 +618,17 @@ class CustomEnvironment(ParallelEnv):
             if hasattr(obj, "radius") and not hasattr(obj, "points"):
                 circ_pos.append(obj.position)
                 circ_rad.append(obj.radius)
-                circ_code.append(self.ray_all_type_mapping_inv[type(obj).__name__])
+                circ_code.append(
+                    self.ray_all_type_mapping_inv[type(obj).__name__])
                 circ_fill.append(
                     obj.food/obj.max_food if type(obj).__name__ == "Field" else 0.0)
 
         if circ_pos:
-            cp   = np.vstack(circ_pos).astype(np.float32)
-            cr   = np.array(circ_rad, np.float32)
+            cp = np.vstack(circ_pos).astype(np.float32)
+            cr = np.array(circ_rad, np.float32)
             hit_s, hit_o = first_hit_circles(pts, cp, cr, ray_thick)
             hit_mask = (hit_s != -1) & (code_all == 0)
-            idxs     = np.where(hit_mask)[0]
+            idxs = np.where(hit_mask)[0]
             dist_all[idxs] = d_grid[hit_s[idxs]]
             code_all[idxs] = np.array(circ_code, np.int32)[hit_o[idxs]]
             fill_pct[idxs] = np.array(circ_fill, np.float32)[hit_o[idxs]]
@@ -633,7 +641,7 @@ class CustomEnvironment(ParallelEnv):
                 if code_all[i] != 0:                # ray already hit something
                     continue
                 j = first_hit_polyline(pts[i], obj.np_points,
-                                    np.float32(obj.radius), np.float32(ray_thick))
+                                       np.float32(obj.radius), np.float32(ray_thick))
                 if j != -1:
                     dist_all[i] = d_grid[j]
                     code_all[i] = self.ray_all_type_mapping_inv["River"]
@@ -641,7 +649,7 @@ class CustomEnvironment(ParallelEnv):
         # ----------------------------------------------------- goal (navigate only)
         if getattr(self, "scenario", None) == "navigate":
             goal_pos = self.goal_pos.astype(np.float32)
-            GOAL_R   = 3.0
+            GOAL_R = 3.0
             goal_code = self.ray_all_type_mapping_inv["Field"]
             for i in range(N):
                 if code_all[i] != 0:
@@ -659,11 +667,10 @@ class CustomEnvironment(ParallelEnv):
         for i in range(N):
             feats[i, :3] = [dist_all[i] / R,               # normalised distance
                             np.sin(angles[i]), np.cos(angles[i])]
-            feats[i, 3 + code_all[i]] = 1.0                # one-hot for hit type
+            # one-hot for hit type
+            feats[i, 3 + code_all[i]] = 1.0
             feats[i, -1] = fill_pct[i]                     # field fill %
         return feats
-
-
 
     def calculate_reward(self, agent, observation):
         return agent.get_reward(observation)
@@ -972,7 +979,8 @@ class Agent:
         self.exploration_damping = 0.7
 
         self.cell_visit_threshold = 25
-        self.over_stay_penalty   = 0.2
+        self.over_stay_penalty = 0.2
+
     @classmethod
     def _get_next_id(cls):
         cls._id_counter += 1
@@ -1054,6 +1062,8 @@ class Agent:
 
         if self.env.scenario == "navigate":
             curr_pos = self.position
+            reward -= self.reward_penalty
+            self.reward_penalty = 0.0
             # attempt to get last position; if not available, use current
             if len(self.previous_position) >= 2:
                 prev_pos = self.previous_position[-2]
@@ -1086,18 +1096,12 @@ class Agent:
                 scale_factor = 1.0
             reward = self.env.progress_scaling * forward_component * \
                 scale_factor - self.env.time_penalty
-            # obstacle proximity penalty: penalize being too close to walls
-            # rays[:,0] is normalized distance to obstacle [0..1]
+
             ray_dists = observation["rays"][:, 0]
             min_ray = float(np.min(ray_dists))
-            # scale penalty: more severe when closer to obstacles
             if min_ray < 0.25:
-                reward -= (1.0 - min_ray)
+                reward -= (1.0 - min_ray) * 1.5
 
-            # increased collision penalty: double the configured penalty
-            if self.collided:
-                reward += self.env.collision_penalty * 2.0
-            # goal bonus for reaching within tolerance
             if goal_dist <= self.env.config.get("goal_tolerance", 3.0):
                 reward += self.env.goal_bonus
             # update for next step
@@ -1108,7 +1112,7 @@ class Agent:
 
         elif self.env.scenario == "gather":
             penalty_amount = self.reward_penalty
-            reward =- penalty_amount
+            reward = - penalty_amount
             self.reward_penalty = 0.0
 
             food_approach_reward = 0.0
@@ -1159,13 +1163,15 @@ class Agent:
                     fill_factor = fill_now          # 0.0 – 1.0
 
                     # scale reward by how close we already are
-                    closeness = 1.0 - min(nearest_dist, AWARENESS_THRESHOLD) / AWARENESS_THRESHOLD
+                    closeness = 1.0 - \
+                        min(nearest_dist, AWARENESS_THRESHOLD) / \
+                        AWARENESS_THRESHOLD
                     # (alternatively, use 1/(nearest_dist+ε) for sharper ramp-up near)
 
                     food_approach_reward = approach_delta \
-                                        * self.W_APPROACH \
-                                        * fill_factor \
-                                        * closeness
+                        * self.W_APPROACH \
+                        * fill_factor \
+                        * closeness
 
                     reward += food_approach_reward
 
@@ -1183,10 +1189,11 @@ class Agent:
             reward += boost
             self.reward_boost = 0.0
             cell = (int(self.position[0] // 5), int(self.position[1] // 5))
-            cnt  = self.visit_counts[cell]
+            cnt = self.visit_counts[cell]
             if cnt < self.cell_visit_threshold:
                 # positive bonus for first few visits
-                bonus = self.exploration_coef / ((cnt + 1) ** self.exploration_damping)
+                bonus = self.exploration_coef / \
+                    ((cnt + 1) ** self.exploration_damping)
             else:
                 # after threshold, negative penalty grows with each extra visit
                 extra = cnt - self.cell_visit_threshold + 1
@@ -1374,7 +1381,7 @@ class Agent:
 
         if not np.allclose(resolved_pos, target_pos):
             self.collided = True
-            self.reward_penalty += 2.5
+            self.reward_penalty += self.env.collision_penalty
 
         if not np.allclose(resolved_pos, target_pos):
             collision_normal = resolved_pos - target_pos
@@ -1385,7 +1392,6 @@ class Agent:
                 self.velocity = slide_dir * 0.25
 
         actual_movement = np.linalg.norm(resolved_pos - self.position)
-        # self.reward_penalty -= actual_movement
         self.stale_count = 0 if actual_movement > 0.3 else self.stale_count + 1
 
         self.position = resolved_pos
@@ -1415,9 +1421,6 @@ class Agent:
         target_position = self.position + self.velocity
         resolved_position = self.env.resolve_collision(
             self.position, target_position)
-
-        if not np.allclose(resolved_position, target_position):
-            self.reward_penalty += 4
 
         actual_movement = np.linalg.norm(resolved_position - self.position)
 
@@ -1461,7 +1464,6 @@ class Agent:
         self.position = resolved_position
         self.velocity *= 0.75
 
-        # self.reward_penalty += actual_movement * 0.2
         self.stale_count = 0 if actual_movement > 0.3 else self.stale_count + 1
 
         # --- extra escape logic for predators boxed in by U‑shaped rivers ---
@@ -1486,7 +1488,6 @@ class Agent:
         # print(len(self.hidden_state_buffer))
         self.initial_sequence_state = None
 
-
     def get_help_vector(self, rays):
 
         env, pos = self.env, self.position
@@ -1496,14 +1497,14 @@ class Agent:
             prey = [a for a in env.agent_data.values() if a.group == 1]
             if not prey:
                 result = (np.zeros(2, np.float32), 0.0,
-                        np.zeros(2, np.float32), 0.0)
+                          np.zeros(2, np.float32), 0.0)
             else:
                 positions = np.vstack([a.position for a in prey])
-                dists     = np.linalg.norm(positions - pos, axis=1)
-                idx       = np.argmin(dists)
+                dists = np.linalg.norm(positions - pos, axis=1)
+                idx = np.argmin(dists)
                 closest, closest_dist = prey[idx], dists[idx]
 
-                lead_t        = env.config.get("predator_intercept_time", 3.0)
+                lead_t = env.config.get("predator_intercept_time", 3.0)
                 predicted_pos = closest.position + closest.velocity * lead_t
                 predicted_pos = np.clip(predicted_pos, 0.0, env.map_size)
 
@@ -1514,46 +1515,47 @@ class Agent:
                     if path and len(path) > 1:
                         vec = path[1] - pos
                         nrm = np.linalg.norm(vec)
-                        direction = vec / nrm if nrm > 1e-8 else np.zeros(2, np.float32)
+                        direction = vec / \
+                            nrm if nrm > 1e-8 else np.zeros(2, np.float32)
                     else:
                         base = predicted_pos - pos
-                        nrm  = np.linalg.norm(base)
-                        base_dir = base / nrm if nrm > 1e-8 else np.zeros(2, np.float32)
+                        nrm = np.linalg.norm(base)
+                        base_dir = base / \
+                            nrm if nrm > 1e-8 else np.zeros(2, np.float32)
                         direction = base_dir          # default
                         for ang in (0, 20, -20, 40, -40, 60, -60, 80, -80):
-                            c, s = np.cos(np.deg2rad(ang)), np.sin(np.deg2rad(ang))
-                            rot  = np.array([base_dir[0]*c - base_dir[1]*s,
+                            c, s = np.cos(np.deg2rad(ang)), np.sin(
+                                np.deg2rad(ang))
+                            rot = np.array([base_dir[0]*c - base_dir[1]*s,
                                             base_dir[0]*s + base_dir[1]*c],
-                                            dtype=np.float32)
+                                           dtype=np.float32)
                             if not env.path_collides(pos, pos + rot * min(8.0, closest_dist)):
                                 direction = rot
                                 break
 
                 result = (direction, closest_dist / max_distance,
-                        np.zeros(2, np.float32), 0.0)
-
+                          np.zeros(2, np.float32), 0.0)
 
         elif env.scenario == "flee":
             predators = [a for a in env.agent_data.values() if a.group == 0]
             if not predators:
                 result = (np.zeros(2, np.float32), 0.0,
-                        np.zeros(2, np.float32), 0.0)
+                          np.zeros(2, np.float32), 0.0)
             else:
                 positions = np.vstack([a.position for a in predators])
-                dists     = np.linalg.norm(positions - pos, axis=1)
-                idx       = np.argmin(dists)
-                diff      = positions[idx] - pos
-                dir_away  = diff / (np.linalg.norm(diff) + 1e-8)
-                result    = (np.zeros(2, np.float32), 0.0,
-                            dir_away,               dists[idx] / max_distance)
+                dists = np.linalg.norm(positions - pos, axis=1)
+                idx = np.argmin(dists)
+                diff = positions[idx] - pos
+                dir_away = diff / (np.linalg.norm(diff) + 1e-8)
+                result = (np.zeros(2, np.float32), 0.0,
+                          dir_away,               dists[idx] / max_distance)
 
         elif env.scenario == "navigate":
-            vec  = env.goal_pos - pos
+            vec = env.goal_pos - pos
             dist = np.linalg.norm(vec)
             direction = vec / dist if dist > 1e-8 else np.zeros(2, np.float32)
             result = (direction, dist / max_distance,
-                    np.zeros(2, np.float32), 0.0)
-
+                      np.zeros(2, np.float32), 0.0)
 
         elif env.scenario in ("gather", "full"):
 
@@ -1561,13 +1563,13 @@ class Agent:
             if not foods:
                 food_vec, food_dist = np.zeros(2, np.float32), 0.0
             else:
-                f_pos  = np.vstack([o.position for o in foods])
-                f_rad  = np.array([o.radius for o in foods], np.float32)
+                f_pos = np.vstack([o.position for o in foods])
+                f_rad = np.array([o.radius for o in foods], np.float32)
                 f_rect = np.array([o.shape == "rectangle" for o in foods])
 
-                diff  = pos - f_pos
+                diff = pos - f_pos
                 dists = np.empty(len(foods), np.float32)
-                dirs  = np.empty_like(diff)
+                dirs = np.empty_like(diff)
 
                 # rectangles
                 if f_rect.any():
@@ -1584,19 +1586,18 @@ class Agent:
                     diff_c = diff[~f_rect]
                     dist_c = np.linalg.norm(diff_c, axis=1)
                     dists[~f_rect] = np.maximum(dist_c - f_rad[~f_rect], 0.0)
-                    dirs[~f_rect]  = (diff_c.T / (dist_c + 1e-8)).T
+                    dirs[~f_rect] = (diff_c.T / (dist_c + 1e-8)).T
 
                 idx = np.argmin(dists)
-                food_vec   = dirs[idx]
-                food_dist  = dists[idx] / max_distance
+                food_vec = dirs[idx]
+                food_dist = dists[idx] / max_distance
 
                 if dists[idx] >= 10.5 and np.max(rays[:, -1]) <= 0.0:
                     food_vec, food_dist = np.zeros(2, np.float32), 0.0
 
-
             if env.scenario == "gather":
                 result = (food_vec, food_dist,
-                        np.zeros(2, np.float32), 0.0)
+                          np.zeros(2, np.float32), 0.0)
 
             else:
                 prey = [a for a in env.agent_data.values() if a.group == 1]
@@ -1604,17 +1605,16 @@ class Agent:
                     prey_vec, prey_dist = np.zeros(2, np.float32), 0.0
                 else:
                     positions = np.vstack([a.position for a in prey])
-                    dists     = np.linalg.norm(positions - pos, axis=1)
-                    idx       = np.argmin(dists)
-                    prey_vec  = (positions[idx] - pos) / (dists[idx] + 1e-8)
+                    dists = np.linalg.norm(positions - pos, axis=1)
+                    idx = np.argmin(dists)
+                    prey_vec = (positions[idx] - pos) / (dists[idx] + 1e-8)
                     prey_dist = dists[idx] / max_distance
 
                 result = (food_vec, food_dist,
-                        prey_vec, prey_dist)
-
+                          prey_vec, prey_dist)
 
         else:
             result = (np.zeros(2, np.float32), 0.0,
-                    np.zeros(2, np.float32), 0.0)
+                      np.zeros(2, np.float32), 0.0)
 
         return result
