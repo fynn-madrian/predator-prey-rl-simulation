@@ -1022,19 +1022,14 @@ class Agent:
 
         self.last_visible_fill = 0.0      # highest food-fill seen in current frame
         self.prev_facing = np.array(facing)
-        self.visit_counts = {}            # (grid_x, grid_y) -> visit counter
-        self.seen_cells = set()           # keep track of which grid-cells have been visited
-
-        # --- exploration tracking ---
-        self.last_visible_fill = 0.0      # highest food-fill seen in current frame
-        self.prev_facing = np.array(facing)
-        self.visit_counts = {}            # (grid_x, grid_y) -> visit counter
-        self.seen_cells = set()           # keep track of which grid-cells have been visited
-        # Exploration tracking for decaying reward
         self.visit_counts = defaultdict(int)
-        self.exploration_coef = 1.0
-        self.exploration_damping = 0.5
+        self.prev_facing = np.array(facing)
 
+        self.exploration_coef = 0.5
+        self.exploration_damping = 0.7
+
+        self.cell_visit_threshold = 25
+        self.over_stay_penalty   = 0.2
     @classmethod
     def _get_next_id(cls):
         cls._id_counter += 1
