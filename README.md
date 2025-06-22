@@ -14,6 +14,7 @@ Ziel ist es, die Lernfähigkeit und Generalisierbarkeit von Agentenverhalten in 
    python -m venv venv
    source venv/bin/activate      # Für Linux/macOS
    venv\Scripts\activate         # Für Windows
+
 2. **Abhängigkeiten installieren**
    ```bash
    pip install -r requirements.txt
@@ -41,8 +42,8 @@ Ziel ist es, die Lernfähigkeit und Generalisierbarkeit von Agentenverhalten in 
       Um die Performance eines Modelles zu evaluieren, kann der Pfad zum Modell in evaluate.py angegeben werden. Ebenfalls kann hier das zu testende Szenario konfiguriert werden. Als Output werden die gewünschten Metriken generiert und unter /evaluate_log die besten 5 Anläufe gespeichert.
        ```bash
       python evaluate.py
-       
 
-   
+
+
 
 

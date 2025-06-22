@@ -14,10 +14,14 @@ class environment_object():
         self.is_pushable = False
 
     def to_dict(self):
-        return {
-            "type": self.__class__.__name__,
-            **vars(self)
-        }
+            # keep everything except temporary/NumPy helper buffers
+            clean = {
+                k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                for k, v in vars(self).items()
+                if k != "np_points" and not k.startswith("_")
+            }
+            # always include the type tag first
+            return {"type": self.__class__.__name__, **clean}
 
 
 class River(environment_object):
@@ -196,7 +200,8 @@ def generate_rivers(config, size):
             neighbors = points[max(0, i - 1):min(len(points), i + 2)]
             avg = np.mean(neighbors, axis=0)
             smoothed.append(tuple(avg))
-
-        rivers.append(River(smoothed, radius))
-
+        river = River(smoothed, radius)
+        if getattr(river, "points", None) is not None:
+            river.np_points = np.asarray(river.points, dtype=np.float32)
+        rivers.append(river)
     return rivers

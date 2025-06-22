@@ -9,8 +9,8 @@ import os
 import datetime
 from algorithms import get_model
 from environment_object import generate_all_objects, Field, place_non_overlapping
-
-from helpers import collides_with, convert_observation, point_to_segment_distance
+from numba import njit
+from helpers import collides_with, convert_observation, point_to_segment_distance, first_hit_polyline, first_hit_circles
 import heapq
 
 from collections import deque, defaultdict
@@ -23,79 +23,6 @@ SPIN_BIN_VALUES = [-0.75,  0.0, 0.75]
 
 
 class CustomEnvironment(ParallelEnv):
-    def find_path(self, start, goal, resolution=5):
-        if resolution <= 0:
-            resolution = 5
-        grid_step = float(resolution)
-        grid_w = int(self.map_size // grid_step)
-        grid_h = grid_w
-
-        def to_cell(pos):
-            return (int(pos[0] // grid_step), int(pos[1] // grid_step))
-
-        def to_world(cell):
-            return np.array([(cell[0] + 0.5) * grid_step,
-                             (cell[1] + 0.5) * grid_step],
-                            dtype=np.float32)
-
-        start_cell = to_cell(start)
-        goal_cell = to_cell(goal)
-        if start_cell == goal_cell:
-            return [start, goal]
-
-        blocked = set()
-        for x in range(grid_w):
-            for y in range(grid_h):
-                centre = np.array([(x + 0.5) * grid_step,
-                                   (y + 0.5) * grid_step],
-                                  dtype=np.float32)
-                for obj in self.objects:
-                    if not getattr(obj, "is_passable", True):
-                        if collides_with(obj, centre):
-                            blocked.add((x, y))
-                            break
-
-        if start_cell in blocked or goal_cell in blocked:
-            return None
-
-        # A* search
-        open_q = []
-        heapq.heappush(open_q, (0, start_cell))
-        g_cost = {start_cell: 0}
-        came_from = {}
-
-        def h(c):
-            # Manhattan heuristic in grid cells
-            return abs(c[0] - goal_cell[0]) + abs(c[1] - goal_cell[1])
-
-        neighbours = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-
-        while open_q:
-            _, current = heapq.heappop(open_q)
-            if current == goal_cell:
-                # Reconstruct path (cell list)
-                path_cells = [current]
-                while current in came_from:
-                    current = came_from[current]
-                    path_cells.append(current)
-                path_cells.reverse()
-                return [to_world(c) for c in path_cells]
-
-            for dx, dy in neighbours:
-                nxt = (current[0] + dx, current[1] + dy)
-                if not (0 <= nxt[0] < grid_w and 0 <= nxt[1] < grid_h):
-                    continue
-                if nxt in blocked:
-                    continue
-                new_g = g_cost[current] + 1
-                if nxt not in g_cost or new_g < g_cost[nxt]:
-                    g_cost[nxt] = new_g
-                    f = new_g + h(nxt)
-                    heapq.heappush(open_q, (f, nxt))
-                    came_from[nxt] = current
-
-        # No path
-        return None
 
     metadata = {"name": "plutonian_insects"}
 
@@ -139,6 +66,7 @@ class CustomEnvironment(ParallelEnv):
             4: "Rock",
             5: "Field",
         }
+        self.ray_all_type_mapping_inv = {v: k for k, v in self.ray_all_type_mapping.items()}
         self.all_type_count = len(self.ray_all_type_mapping)
 
         self.sequence_length = self.config.get("sequence_length")
@@ -159,8 +87,8 @@ class CustomEnvironment(ParallelEnv):
         else:
             self.folder_path = folder_path
         self.model_save_path = os.path.join(self.folder_path, "models")
-        self.agent_data = self.generate_agents(self.scenario)
         self.scenario = self.config.get("scenario", "navigate")
+        self.agent_data = self.generate_agents(self.scenario)
         if self.scenario == "navigate":
 
             self.start_pos = np.array(
@@ -491,6 +419,59 @@ class CustomEnvironment(ParallelEnv):
 
         return next_observations, rewards, terminations, truncations, infos
 
+    def find_path(self, start, goal, step_size=5, max_steps=50):
+        """
+        Fast, greedy path approximation.
+        Attempts to move from start to goal with obstacle avoidance.
+        Returns a list of waypoints or None if blocked.
+        """
+        direction = goal - start
+        distance = np.linalg.norm(direction)
+        if distance < step_size:
+            return [start, goal]
+
+        direction = direction / distance
+        path = [start]
+        current = start.copy()
+        attempts = 0
+
+        while attempts < max_steps:
+            attempts += 1
+            next_point = current + direction * step_size
+
+            # Clip to map bounds
+            if np.any(next_point < 0) or np.any(next_point >= self.map_size):
+                return None
+
+            # Check for collision
+            blocked = any(
+                not getattr(obj, "is_passable", True) and
+                collides_with(obj, next_point)
+                for obj in self.objects
+            )
+
+            if blocked:
+                # Try minor detours: left/right/orthogonal
+                perp = np.array([-direction[1], direction[0]]) * step_size * 0.75
+                for offset in [perp, -perp]:
+                    detour = current + direction * step_size + offset
+                    if np.all(0 <= detour) and np.all(detour < self.map_size):
+                        if not any(not getattr(obj, "is_passable", True) and
+                                collides_with(obj, detour) for obj in self.objects):
+                            next_point = detour
+                            break
+                else:
+                    return None  # No viable detour
+
+            path.append(next_point)
+            current = next_point
+
+            if np.linalg.norm(goal - current) < step_size:
+                path.append(goal)
+                return path
+
+        return None
+
     def generate_agents(self, scenario):
         agents = {}
         location = np.array(
@@ -514,15 +495,14 @@ class CustomEnvironment(ParallelEnv):
                 location = np.array(
                     [np.random.randint(0, self.map_size), np.random.randint(0, self.map_size)])
 
-            predator_model = load_model(self.model_save_path, "predator")
-            new_predator = Agent(0, location, env=self,
-                                 model=predator_model, max_speed=self.max_speed, max_age=self.max_age)
+            new_predator = Agent(0, location, env=self, max_speed=self.max_speed, max_age=self.max_age)
             agents[str(new_predator.ID)] = new_predator
 
         return agents
 
     def generate_map(self):
         map_objects = generate_all_objects(self.map_config, self.map_size)
+
         return map_objects
 
     def render(self):
@@ -590,137 +570,100 @@ class CustomEnvironment(ParallelEnv):
         self.agents.remove(agent_id)
 
     def cast_rays(self, agent):
-        N = self.vision_rays
-        R = self.vision_range
-        ray_thickness = 1.0
-        S = 20
-        fov = np.deg2rad(self.predator_fov if agent.group ==
-                         0 else self.prey_fov)
+        N, R, S = self.vision_rays, self.vision_range, 20
+        ray_thick = 1.0
+        fov = np.deg2rad(self.predator_fov if agent.group == 0 else self.prey_fov)
 
         base_ang = np.arctan2(-agent.facing[1], agent.facing[0])
-        angles = np.linspace(-fov/2, fov/2, N) + base_ang
-        dirs = np.stack([np.cos(angles), -np.sin(angles)], axis=1)  # (N,2)
+        angles   = np.linspace(-fov/2, fov/2, N) + base_ang
+        dirs     = np.stack([np.cos(angles), -np.sin(angles)], axis=1)
+        d_grid   = np.linspace(0.1, R, S, dtype=np.float32)
+        pts      = agent.position[None, None, :] + dirs[:, None, :] * d_grid[None,:,None]
 
-        distances = np.linspace(0.1, R, S)
-        pts = agent.position[None, None, :] + \
-            dirs[:, None, :] * distances[None, :, None]
+        # ------------------------------------------------------------------ OOB
+        dist_all = np.full(N, R, np.float32)
+        code_all = np.zeros(N, np.int32)
+        fill_pct = np.zeros(N, np.float32)
 
-        dist_all = np.full((N,), R, dtype=np.float32)
-        code_all = np.zeros((N,), dtype=int)
-        fill_pct = np.zeros((N,), dtype=np.float32)     # new — field fill %
+        mask_oob  = (pts[...,0] < 0) | (pts[...,0] >= self.map_size) | \
+                    (pts[...,1] < 0) | (pts[...,1] >= self.map_size)
+        first_oob = mask_oob.argmax(1)
+        has_oob   = mask_oob.any(1)
+        dist_all[has_oob] = d_grid[first_oob[has_oob]]
+        code_all[has_oob] = 1      # code 1 = map edge
 
-        mask_oob = (pts[..., 0] < 0) | (pts[..., 0] >= self.map_size) | (
-            pts[..., 1] < 0) | (pts[..., 1] >= self.map_size)
-        first_oob = np.argmax(mask_oob, axis=1)
-        has_oob = mask_oob.any(axis=1)
-        for i in np.where(has_oob)[0]:
-            j = first_oob[i]
-            d = distances[j]
-            if code_all[i] == 0:
-                dist_all[i] = d
-                code_all[i] = 1
-
-        others = [o for o in self.agent_data.values() if o.ID != agent.ID]
+        # ----------------------------------------------------------- other AGENTS
+        others   = [o for o in self.agent_data.values() if o.ID != agent.ID]
         if others:
-            other_pos = np.array([o.position for o in others])
-            other_codes = np.array(
-                [2 if o.group == 0 else 3 for o in others], dtype=int)
-            d2 = np.sum((other_pos[:, None, None, :] -
-                        pts[None, :, :, :])**2, axis=3)
-            mask_agents = d2 < (
-                self.agent_detection_radius + ray_thickness)**2
-            any_agent = mask_agents.any(axis=0)  # (N,S)
-            first_agent = np.argmax(any_agent, axis=1)
-            has_agent = any_agent.any(axis=1)
-            for i in np.where(has_agent)[0]:
-                j = first_agent[i]
-                d = distances[j]
-                idx = np.where(mask_agents[:, i, j])[0][0]
-                code = other_codes[idx]
-                if code_all[i] == 0:
-                    dist_all[i] = d
-                    code_all[i] = code
+            op    = np.array([o.position for o in others], np.float32)
+            orad  = self.agent_detection_radius * np.ones(len(others), np.float32)
+            ocod  = np.array([2 if o.group == 0 else 3 for o in others], np.int32)
 
-        # Treat the navigation goal as a circular field for vision (radius 3)
+            hit_s, hit_o = first_hit_circles(pts, op, orad, ray_thick)
+            hit_mask = hit_s != -1
+            idxs     = np.where(hit_mask & (code_all == 0))[0]
+            dist_all[idxs] = d_grid[hit_s[idxs]]
+            code_all[idxs] = ocod[hit_o[idxs]]
+
+        # ----------------------------------------------------- static CIRCLES/RECTS
+        circ_pos, circ_rad, circ_code, circ_fill = [], [], [], []
+        for obj in self.objects:
+            if hasattr(obj, "radius") and not hasattr(obj, "points"):
+                circ_pos.append(obj.position)
+                circ_rad.append(obj.radius)
+                circ_code.append(self.ray_all_type_mapping_inv[type(obj).__name__])
+                circ_fill.append(
+                    obj.food/obj.max_food if type(obj).__name__ == "Field" else 0.0)
+
+        if circ_pos:
+            cp   = np.vstack(circ_pos).astype(np.float32)
+            cr   = np.array(circ_rad, np.float32)
+            hit_s, hit_o = first_hit_circles(pts, cp, cr, ray_thick)
+            hit_mask = (hit_s != -1) & (code_all == 0)
+            idxs     = np.where(hit_mask)[0]
+            dist_all[idxs] = d_grid[hit_s[idxs]]
+            code_all[idxs] = np.array(circ_code, np.int32)[hit_o[idxs]]
+            fill_pct[idxs] = np.array(circ_fill, np.float32)[hit_o[idxs]]
+
+        # --------------------------------------------------------- poly-line RIVERS
+        for obj in self.objects:
+            if not hasattr(obj, "points"):          # not a river
+                continue
+            for i in range(N):
+                if code_all[i] != 0:                # ray already hit something
+                    continue
+                j = first_hit_polyline(pts[i], obj.np_points,
+                                    np.float32(obj.radius), np.float32(ray_thick))
+                if j != -1:
+                    dist_all[i] = d_grid[j]
+                    code_all[i] = self.ray_all_type_mapping_inv["River"]
+
+        # ----------------------------------------------------- goal (navigate only)
         if getattr(self, "scenario", None) == "navigate":
-            goal_pos = self.goal_pos
-            GOAL_RADIUS = 3.0
+            goal_pos = self.goal_pos.astype(np.float32)
+            GOAL_R   = 3.0
+            goal_code = self.ray_all_type_mapping_inv["Field"]
             for i in range(N):
                 if code_all[i] != 0:
                     continue
-                # Check each sample point along ray i against goal
-                pts_i = pts[i]  # shape (S, 2)
-                dists_to_goal = np.linalg.norm(pts_i - goal_pos, axis=1)
-                hits = dists_to_goal < GOAL_RADIUS + ray_thickness
-                if hits.any():
-                    j = np.argmax(hits)
-                    d = distances[j]
-                    dist_all[i] = d
-                    # Use the same code as "Field" so fill_pct shows target
-                    field_code = next(
-                        k for k, v in self.ray_all_type_mapping.items() if v == "Field")
-                    code_all[i] = field_code
+                d2 = ((pts[i] - goal_pos)**2).sum(1)
+                hit = np.where(d2 < (GOAL_R + ray_thick)**2)[0]
+                if hit.size:
+                    j = int(hit[0])
+                    dist_all[i] = d_grid[j]
+                    code_all[i] = goal_code
                     fill_pct[i] = 1.0
 
+        # --------------------------------------------------------------- features
+        feats = np.zeros((N, 4 + self.all_type_count), np.float32)
         for i in range(N):
-            for obj in self.objects:
-                if hasattr(obj, "points"):
-                    hit_found = False
-                    for p in obj.points:
-                        rel = pts[i] - np.array(p)
-                        d2 = np.sum(rel**2, axis=1)
-                        effective_radius = obj.radius + ray_thickness
-                        hits = d2 < (effective_radius ** 2)
-                        if hits.any():
-                            j = np.argmax(hits)
-                            d = distances[j]
-                            if code_all[i] == 0:
-                                dist_all[i] = d
-                                code_all[i] = 4  # River
-                            hit_found = True
-                            break
-                    if hit_found:
-                        break
-                elif hasattr(obj, "radius"):
-                    rel = pts[i] - obj.position
-                    d2 = np.sum(rel**2, axis=1)
-                    effective_radius = obj.radius + ray_thickness
-                    hits = d2 < (effective_radius ** 2)
-                    if not hits.any():
-                        continue
-                    j = np.argmax(hits)
-                    d = distances[j]
-                    if code_all[i] == 0:
-                        dist_all[i] = d
-                        try:
-                            code_all[i] = next(
-                                k for k, v in self.ray_all_type_mapping.items()
-                                if v == obj.__class__.__name__
-                            )
-                        except StopIteration:
-                            print(
-                                f"[DEBUG] Unmapped class in ray casting: {obj.__class__.__name__} "
-                                f"(available: {list(self.ray_all_type_mapping.values())})"
-                            )
-                            raise
-                        # store field fill percentage if this is a Field
-                        if obj.__class__.__name__ == "Field":
-                            fill_pct[i] = obj.food / obj.max_food
-
-                    break
-
-        # +1 column for field-fill percentage
-        feats = np.zeros((N, 4 + self.all_type_count), dtype=np.float32)
-        for i in range(N):
-            d1 = dist_all[i] / R
-            sin_i = np.sin(angles[i])
-            cos_i = np.cos(angles[i])
-            oh_all = np.zeros(self.all_type_count, dtype=np.float32)
-            oh_all[code_all[i]] = 1.0
-            feats[i] = np.concatenate(
-                [[d1, sin_i, cos_i], oh_all, [fill_pct[i]]])
-
+            feats[i, :3] = [dist_all[i] / R,               # normalised distance
+                            np.sin(angles[i]), np.cos(angles[i])]
+            feats[i, 3 + code_all[i]] = 1.0                # one-hot for hit type
+            feats[i, -1] = fill_pct[i]                     # field fill %
         return feats
+
+
 
     def calculate_reward(self, agent, observation):
         return agent.get_reward(observation)
@@ -1543,181 +1486,135 @@ class Agent:
         # print(len(self.hidden_state_buffer))
         self.initial_sequence_state = None
 
+
     def get_help_vector(self, rays):
-        max_distance = self.env.map_size * (2 ** 0.5)
 
-        prey = [a for a in self.env.agent_data.values() if a.group == 1]
+        env, pos = self.env, self.position
+        max_distance = env.map_size * np.sqrt(2.0)
+
         if self.group == 0:
+            prey = [a for a in env.agent_data.values() if a.group == 1]
             if not prey:
-                direction = np.array([0.0, 0.0], dtype=np.float32)
-                return direction, 0.0, np.array([0, 0], dtype=np.float32), 0.0
-            positions = np.vstack([a.position for a in prey])
-            dists = np.linalg.norm(positions - self.position, axis=1)
-            idx = np.argmin(dists)
-            closest = prey[idx]
-            closest_dist = dists[idx]
-            # predict intercept point for prey
-            lead_time = self.env.config.get("predator_intercept_time", 3.0)
-            predicted_pos = closest.position + closest.velocity * lead_time
-            # clamp predicted position within environment bounds
-            predicted_pos = np.clip(predicted_pos, 0.0, self.env.map_size)
-            target_pos = predicted_pos
-
-            if not self.env.path_collides(self.position, target_pos):
-                direction = (target_pos - self.position) / \
-                    (np.linalg.norm(target_pos - self.position) + 1e-8)
-            else:
-                path = self.env.find_path(
-                    self.position, target_pos, resolution=5)
-                if path and len(path) > 1:
-                    waypoint = path[1]
-                    vec_wp = waypoint - self.position
-                    norm_wp = np.linalg.norm(vec_wp)
-                    if norm_wp > 1e-8:
-                        direction = vec_wp / norm_wp
-                    else:
-                        direction = np.array([0.0, 0.0], dtype=np.float32)
-                else:
-                    # Fall back to previous fan‑search heuristic
-                    base_dir = closest.position - self.position
-                    base_norm = np.linalg.norm(base_dir)
-                    base_dir = base_dir / \
-                        base_norm if base_norm > 1e-8 else np.array(
-                            [0.0, 0.0], dtype=np.float32)
-                    candidate_angles = [0, 20, -20, 40, -40, 60, -60, 80, -80]
-                    lookahead = min(8.0, closest_dist)
-                    direction = base_dir
-                    for ang in candidate_angles:
-                        rad = np.deg2rad(ang)
-                        c, s = np.cos(rad), np.sin(rad)
-                        vx, vy = base_dir
-                        rot_dir = np.array(
-                            [vx * c - vy * s, vx * s + vy * c], dtype=np.float32)
-                        test_target = self.position + rot_dir * lookahead
-                        if not self.env.path_collides(self.position, test_target):
-                            direction = rot_dir
-                            break
-
-            return direction, closest_dist / max_distance, np.array([0, 0], dtype=np.float32), 0.0
-
-        if self.env.scenario == "flee":
-
-            predators = [a for a in self.env.agent_data.values()
-                         if a.group == 0]
-            if not predators:
-                return np.array([0, 0], dtype=np.float32), 0.0, np.array([0.0, 0.0], dtype=np.float32), 0.0
-
-            positions = np.vstack([a.position for a in predators])
-            dists = np.linalg.norm(positions - self.position, axis=1)
-            idx = np.argmin(dists)
-            nearest = predators[idx]
-            direction = (nearest.position - self.position) / \
-                (np.linalg.norm(nearest.position - self.position) + 1e-8)
-            return np.array([0, 0], dtype=np.float32), 0.0, direction, dists[idx] / max_distance,
-
-        elif self.env.scenario == "navigate":
-            # For navigation, we want to guide the agent towards the goal
-            goal_vector = self.env.goal_pos - self.position
-            goal_distance = np.linalg.norm(goal_vector)
-            if goal_distance > 1e-8:
-                direction = goal_vector / goal_distance
-            else:
-                direction = np.array([0.0, 0.0], dtype=np.float32)
-            return direction, goal_distance / max_distance, 1.0, np.array([0, 0], dtype=np.float32), 0.0
-
-        elif self.env.scenario == "gather":
-            # get food direction if in rays or 15 range
-            food_objs = [o for o in self.env.objects if o.is_food]
-            if not food_objs:
-                return np.array([0.0, 0.0], dtype=np.float32), 0.0, np.array([0, 0], dtype=np.float32), 0.0
-            # Compute distance to edge (rectangular or circular), and direction toward center
-            dists = np.zeros(len(food_objs), dtype=float)
-            dirs = np.zeros((len(food_objs), 2), dtype=float)
-            for i, o in enumerate(food_objs):
-                center = o.position
-                if o.shape == "rectangle":
-                    # half‐extents given by o.radius (square field)
-                    half = o.radius
-                    diff = self.position - center
-                    # clamp each axis to half‐extent to find closest point on rectangle
-                    clamped = np.maximum(np.minimum(diff, half), -half)
-                    closest_point = center + clamped
-                    vec_to_edge = closest_point - self.position
-                    dist = np.linalg.norm(vec_to_edge)
-                    # direction toward field center
-                    vec_center = center - self.position
-                    dir_vec = vec_center / (np.linalg.norm(vec_center) + 1e-8)
-                else:
-                    # circular field
-                    rad = o.radius
-                    vec_center = center - self.position
-                    dist_center = np.linalg.norm(vec_center)
-                    dist = max(dist_center - rad, 0.0)
-                    dir_vec = vec_center / (dist_center + 1e-8)
-                dists[i] = dist
-                dirs[i] = dir_vec
-            idx = np.argmin(dists)
-            closest_food = food_objs[idx]
-            closest_dist = dists[idx]
-            direction = dirs[idx]
-            # only consider food within a certain range or if it is in the rays
-            if closest_dist < 10.0 or np.max(rays[:, -1]) > 0.0:
-                return direction, closest_dist / max_distance, np.array([0, 0], dtype=np.float32), 0.0
-            return np.array([0.0, 0.0], dtype=np.float32), 0.0, np.array([0, 0], dtype=np.float32), 0.0
-
-        elif self.env.scenario == "full":
-            # get food direction if in rays or 15 range
-            food_objs = [o for o in self.env.objects if o.is_food]
-            if not food_objs:
-                return np.array([0.0, 0.0], dtype=np.float32), 0.0, np.array([0, 0], dtype=np.float32), 0.0
-            # Compute distance to edge (rectangular or circular), and direction toward center
-            dists = np.zeros(len(food_objs), dtype=float)
-            dirs = np.zeros((len(food_objs), 2), dtype=float)
-            for i, o in enumerate(food_objs):
-                center = o.position
-                if o.shape == "rectangle":
-                    # half‐extents given by o.radius (square field)
-                    half = o.radius
-                    diff = self.position - center
-                    # clamp each axis to half‐extent to find closest point on rectangle
-                    clamped = np.maximum(np.minimum(diff, half), -half)
-                    closest_point = center + clamped
-                    vec_to_edge = closest_point - self.position
-                    dist = np.linalg.norm(vec_to_edge)
-                    # direction toward field center
-                    vec_center = center - self.position
-                    dir_vec = vec_center / (np.linalg.norm(vec_center) + 1e-8)
-                else:
-                    # circular field
-                    rad = o.radius
-                    vec_center = center - self.position
-                    dist_center = np.linalg.norm(vec_center)
-                    dist = max(dist_center - rad, 0.0)
-                    dir_vec = vec_center / (dist_center + 1e-8)
-                dists[i] = dist
-                dirs[i] = dir_vec
-            idx = np.argmin(dists)
-            closest_food = food_objs[idx]
-            closest_dist = dists[idx]
-            direction = dirs[idx]
-
-            if closest_dist < 10.5 or np.max(rays[:, -1]) > 0.0:
-                food_vector = direction
-                food_distance = closest_dist / max_distance
-            else:
-                food_vector = np.array([0.0, 0.0], dtype=np.float32)
-                food_distance = 0.0
-            # For predators, we also want to know the direction and distance to the closest prey
-            prey = [a for a in self.env.agent_data.values() if a.group == 1]
-            if not prey:
-                prey_vector = np.array([0.0, 0.0], dtype=np.float32)
-                prey_distance = 0.0
+                result = (np.zeros(2, np.float32), 0.0,
+                        np.zeros(2, np.float32), 0.0)
             else:
                 positions = np.vstack([a.position for a in prey])
-                dists = np.linalg.norm(positions - self.position, axis=1)
+                dists     = np.linalg.norm(positions - pos, axis=1)
+                idx       = np.argmin(dists)
+                closest, closest_dist = prey[idx], dists[idx]
+
+                lead_t        = env.config.get("predator_intercept_time", 3.0)
+                predicted_pos = closest.position + closest.velocity * lead_t
+                predicted_pos = np.clip(predicted_pos, 0.0, env.map_size)
+
+                if not env.path_collides(pos, predicted_pos):
+                    direction = (predicted_pos - pos) / (closest_dist + 1e-8)
+                else:
+                    path = env.find_path(pos, predicted_pos)
+                    if path and len(path) > 1:
+                        vec = path[1] - pos
+                        nrm = np.linalg.norm(vec)
+                        direction = vec / nrm if nrm > 1e-8 else np.zeros(2, np.float32)
+                    else:
+                        base = predicted_pos - pos
+                        nrm  = np.linalg.norm(base)
+                        base_dir = base / nrm if nrm > 1e-8 else np.zeros(2, np.float32)
+                        direction = base_dir          # default
+                        for ang in (0, 20, -20, 40, -40, 60, -60, 80, -80):
+                            c, s = np.cos(np.deg2rad(ang)), np.sin(np.deg2rad(ang))
+                            rot  = np.array([base_dir[0]*c - base_dir[1]*s,
+                                            base_dir[0]*s + base_dir[1]*c],
+                                            dtype=np.float32)
+                            if not env.path_collides(pos, pos + rot * min(8.0, closest_dist)):
+                                direction = rot
+                                break
+
+                result = (direction, closest_dist / max_distance,
+                        np.zeros(2, np.float32), 0.0)
+
+
+        elif env.scenario == "flee":
+            predators = [a for a in env.agent_data.values() if a.group == 0]
+            if not predators:
+                result = (np.zeros(2, np.float32), 0.0,
+                        np.zeros(2, np.float32), 0.0)
+            else:
+                positions = np.vstack([a.position for a in predators])
+                dists     = np.linalg.norm(positions - pos, axis=1)
+                idx       = np.argmin(dists)
+                diff      = positions[idx] - pos
+                dir_away  = diff / (np.linalg.norm(diff) + 1e-8)
+                result    = (np.zeros(2, np.float32), 0.0,
+                            dir_away,               dists[idx] / max_distance)
+
+        elif env.scenario == "navigate":
+            vec  = env.goal_pos - pos
+            dist = np.linalg.norm(vec)
+            direction = vec / dist if dist > 1e-8 else np.zeros(2, np.float32)
+            result = (direction, dist / max_distance,
+                    np.zeros(2, np.float32), 0.0)
+
+
+        elif env.scenario in ("gather", "full"):
+
+            foods = [o for o in env.objects if getattr(o, "is_food", False)]
+            if not foods:
+                food_vec, food_dist = np.zeros(2, np.float32), 0.0
+            else:
+                f_pos  = np.vstack([o.position for o in foods])
+                f_rad  = np.array([o.radius for o in foods], np.float32)
+                f_rect = np.array([o.shape == "rectangle" for o in foods])
+
+                diff  = pos - f_pos
+                dists = np.empty(len(foods), np.float32)
+                dirs  = np.empty_like(diff)
+
+                # rectangles
+                if f_rect.any():
+                    half = f_rad[f_rect][:, None]
+                    clamped = np.maximum(np.minimum(diff[f_rect], half), -half)
+                    edge_vec = clamped + f_pos[f_rect] - pos
+                    dists[f_rect] = np.linalg.norm(edge_vec, axis=1)
+                    to_ctr = f_pos[f_rect] - pos
+                    dirs[f_rect] = (to_ctr.T /
+                                    (np.linalg.norm(to_ctr, axis=1) + 1e-8)).T
+
+                # circles
+                if (~f_rect).any():
+                    diff_c = diff[~f_rect]
+                    dist_c = np.linalg.norm(diff_c, axis=1)
+                    dists[~f_rect] = np.maximum(dist_c - f_rad[~f_rect], 0.0)
+                    dirs[~f_rect]  = (diff_c.T / (dist_c + 1e-8)).T
+
                 idx = np.argmin(dists)
-                closest_prey = prey[idx]
-                prey_vector = (closest_prey.position - self.position) / \
-                    (dists[idx] + 1e-8)
-                prey_distance = dists[idx] / max_distance
-            return food_vector, food_distance, prey_vector, prey_distance
+                food_vec   = dirs[idx]
+                food_dist  = dists[idx] / max_distance
+
+                if dists[idx] >= 10.5 and np.max(rays[:, -1]) <= 0.0:
+                    food_vec, food_dist = np.zeros(2, np.float32), 0.0
+
+
+            if env.scenario == "gather":
+                result = (food_vec, food_dist,
+                        np.zeros(2, np.float32), 0.0)
+
+            else:
+                prey = [a for a in env.agent_data.values() if a.group == 1]
+                if not prey:
+                    prey_vec, prey_dist = np.zeros(2, np.float32), 0.0
+                else:
+                    positions = np.vstack([a.position for a in prey])
+                    dists     = np.linalg.norm(positions - pos, axis=1)
+                    idx       = np.argmin(dists)
+                    prey_vec  = (positions[idx] - pos) / (dists[idx] + 1e-8)
+                    prey_dist = dists[idx] / max_distance
+
+                result = (food_vec, food_dist,
+                        prey_vec, prey_dist)
+
+
+        else:
+            result = (np.zeros(2, np.float32), 0.0,
+                    np.zeros(2, np.float32), 0.0)
+
+        return result

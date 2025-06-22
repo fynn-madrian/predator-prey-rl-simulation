@@ -218,40 +218,24 @@ for metric_name, values in metrics.items():
 
 print("Saved training metrics plots")
 
-# === Plotting time to goal per episode (streaming) ===
-episode_lengths = []
-for species, species_path in species_paths.items():
-    for fname in os.listdir(species_path):
-        path = os.path.join(species_path, fname)
-        try:
-            with open(path, 'r') as f:
-                prev_step = 0
-                for line_idx, line in enumerate(f):
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if data.get("termination") == True or data.get("truncation") == True:
-                        current_step = line_idx
-                        length = current_step - prev_step
-                        episode_lengths.append(length)
-                        prev_step = current_step
-        except Exception:
-            continue
-
-print(f"Total episodes: {len(episode_lengths)}")
-print(f"Episode lengths: {episode_lengths}")
-
 if episode_lengths:
+    window = 250                 # ← size of the moving window (tweak as you like)
+    # compute rolling mean with a convolution trick
+    kernel = np.ones(window) / window
+    rolling_avg = np.convolve(episode_lengths, kernel, mode="valid")
+
+    # x-values should line up with the *center* of each window
+    x_vals = np.arange(window - 1, len(episode_lengths))
+
     plt.figure(figsize=(10, 5))
-    plt.plot(range(len(episode_lengths)),
-             episode_lengths, marker="o", linestyle="-")
+    plt.plot(x_vals, rolling_avg, linewidth=2)
     plt.xlabel("Episode Index")
-    plt.ylabel("Episode Length (steps)")
-    plt.title("Time to Goal (or Max Length if Not Reached) per Episode")
+    plt.ylabel(f"Episode Length (⟨{window}-ep moving avg⟩)")
+    plt.title("Rolling Average of Episode Lengths")
     plt.grid(True)
     plt.tight_layout()
+
     os.makedirs("graphs", exist_ok=True)
-    plt.savefig("graphs/episode_lengths.png")
+    plt.savefig("graphs/episode_lengths_rolling.png")
     plt.close()
-    print("Saved: graphs/episode_lengths.png")
+    print("Saved: graphs/episode_lengths_rolling.png")
