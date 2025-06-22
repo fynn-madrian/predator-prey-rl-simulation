@@ -661,7 +661,7 @@ class CustomEnvironment(ParallelEnv):
                 # Check each sample point along ray i against goal
                 pts_i = pts[i]  # shape (S, 2)
                 dists_to_goal = np.linalg.norm(pts_i - goal_pos, axis=1)
-                hits = dists_to_goal < GOAL_RADIUS
+                hits = dists_to_goal < GOAL_RADIUS + ray_thickness
                 if hits.any():
                     j = np.argmax(hits)
                     d = distances[j]
@@ -1142,12 +1142,34 @@ class Agent:
                 goal_dir = np.zeros_like(goal_vec)
             # project movement onto goal direction (only forward component)
             forward_component = float(np.dot(movement_vec, goal_dir))
-            # reward is scaled forward movement minus time penalty
-            reward = self.env.progress_scaling * forward_component - self.env.time_penalty
-            # collision penalty if collided this step
+            # Non-linear proximity scaling: strong boost within last 7.5 units, slight adjustment otherwise
+            threshold = 7.5
+            max_dist = np.linalg.norm(self.env.goal_pos - prev_pos)
+            if goal_dist <= threshold:
+                # strong non-linear boost near goal: quadratic ramp
+                proximity = (threshold - goal_dist) / threshold
+                scale_factor = 1.25 + proximity * proximity
+            elif max_dist > threshold:
+                # slight linear adjustment when far: up to +10% at threshold boundary
+                deep_proximity = (max_dist - goal_dist) / \
+                    (max_dist - threshold)
+                scale_factor = 1.0 + 0.1 * deep_proximity
+            else:
+                scale_factor = 1.0
+            reward = self.env.progress_scaling * forward_component * \
+                scale_factor - self.env.time_penalty
+            # obstacle proximity penalty: penalize being too close to walls
+            # rays[:,0] is normalized distance to obstacle [0..1]
+            ray_dists = observation["rays"][:, 0]
+            min_ray = float(np.min(ray_dists))
+            # scale penalty: more severe when closer to obstacles
+            if min_ray < 0.25:
+                reward -= (1.0 - min_ray)
+
+            # increased collision penalty: double the configured penalty
             if self.collided:
-                reward += self.env.collision_penalty
-            # check for goal attainment
+                reward += self.env.collision_penalty * 2.0
+            # goal bonus for reaching within tolerance
             if goal_dist <= self.env.config.get("goal_tolerance", 3.0):
                 reward += self.env.goal_bonus
             # update for next step
