@@ -1165,14 +1165,8 @@ class Agent:
 
         elif self.env.scenario == "gather":
             penalty_amount = self.reward_penalty
-            reward = - penalty_amount
+            reward =- penalty_amount
             self.reward_penalty = 0.0
-            fine_cell = (int(self.position[0]//15), int(self.position[1]//15))
-            count = self.visit_counts[fine_cell]
-            exp_reward = self.exploration_coef / \
-                ((count + 1) ** self.exploration_damping)
-            self.visit_counts[fine_cell] = count + 1
-            reward += exp_reward
 
             food_approach_reward = 0.0
 
@@ -1213,12 +1207,27 @@ class Agent:
                 fill_now = nearest_food_obj.food / nearest_food_obj.max_food
                 if self.last_food_dist is None:
                     self.last_food_dist = nearest_dist
+
+                # how much closer we got this step
                 approach_delta = self.last_food_dist - nearest_dist
-                # pay approach bonus only for meaningful progress (Δ > ε)
-                if approach_delta > 0.2 and fill_now > 0:
+
+                # only reward if there’s actually food and real progress
+                if fill_now > 0:
                     fill_factor = fill_now          # 0.0 – 1.0
-                    food_approach_reward = approach_delta * self.W_APPROACH * fill_factor
+
+                    # scale reward by how close we already are
+                    closeness = 1.0 - min(nearest_dist, AWARENESS_THRESHOLD) / AWARENESS_THRESHOLD
+                    # (alternatively, use 1/(nearest_dist+ε) for sharper ramp-up near)
+
+                    food_approach_reward = approach_delta \
+                                        * self.W_APPROACH \
+                                        * fill_factor \
+                                        * closeness
+
                     reward += food_approach_reward
+
+                # update for next frame
+                self.last_food_dist = nearest_dist
                 # update last distance when aware
                 self.last_food_dist = nearest_dist
                 self.last_target_food = nearest_food_obj
@@ -1230,14 +1239,22 @@ class Agent:
             boost = self.reward_boost
             reward += boost
             self.reward_boost = 0.0
+            cell = (int(self.position[0] // 5), int(self.position[1] // 5))
+            cnt  = self.visit_counts[cell]
+            if cnt < self.cell_visit_threshold:
+                # positive bonus for first few visits
+                bonus = self.exploration_coef / ((cnt + 1) ** self.exploration_damping)
+            else:
+                # after threshold, negative penalty grows with each extra visit
+                extra = cnt - self.cell_visit_threshold + 1
+                bonus = - self.over_stay_penalty * extra
+                bonus = max(bonus, -1.5)  # cap the penalty
 
-            fill_pcts = observation["rays"][:, -1]
-            visible = float(np.max(fill_pcts))
+            self.visit_counts[cell] += 1
+            reward += bonus
 
-            # reward only when visibility genuinely improves
-            if visible > self.last_visible_fill + 0.05:
-                reward += 2.0 * (visible - self.last_visible_fill)
-            self.last_visible_fill = visible
+            if any(fill_pcts > 0.0):
+                reward += 0.5
 
             return reward
 
