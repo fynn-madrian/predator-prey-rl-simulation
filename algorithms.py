@@ -42,7 +42,7 @@ action_space = spaces.Dict({
 
 
 class AgentNet(models.Model):
-    def __init__(self, total_steps=5_000_000, log_dir=None):
+    def __init__(self, total_steps=5_000_000, log_dir="logs"):
         super(AgentNet, self).__init__()
 
         # flat feature encoder
@@ -363,13 +363,15 @@ def get_model(log_dir=None):
     return model
 
 
-def load_model(filepath=None, model=None):
-    new_model = AgentNet()
+def load_model(filepath=None, model=None, log_dir=None):
+    new_model = AgentNet(log_dir=log_dir)
     dummy_flat = tf.zeros((1, 64, 12), dtype=tf.float32)
     dummy_rays = tf.zeros(
         (1, 64, RAY_COUNT, RAY_FEATURE_DIM), dtype=tf.float32)
     h1, c1 = new_model.get_initial_state(batch_size=1)
     new_model(dummy_flat, dummy_rays, h1, c1, training=False)
+    print("Loading model weights from:",
+          filepath if filepath else "provided model")
     if filepath is not None:
         new_model.load_weights(filepath)
     elif model is not None:
