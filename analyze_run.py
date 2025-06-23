@@ -23,8 +23,6 @@ species_paths = {
 
 window_size = 25000
 
-# Streaming computation of windowed metrics without loading entire files
-# Determine max_step across all species by counting lines
 max_step = 0
 for species, species_path in species_paths.items():
     for fname in os.listdir(species_path):
@@ -217,14 +215,30 @@ for metric_name, values in metrics.items():
     plt.close()
 
 print("Saved training metrics plots")
+episode_lengths = []
+for species, species_path in species_paths.items():
+    for fname in os.listdir(species_path):
+        path = os.path.join(species_path, fname)
+        try:
+            with open(path, 'r') as f:
+                prev_step = 0
+                for line_idx, line in enumerate(f):
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("termination") == True or data.get("truncation") == True:
+                        current_step = line_idx
+                        length = current_step - prev_step
+                        episode_lengths.append(length)
+                        prev_step = current_step
+        except Exception:
+            continue
 
 if episode_lengths:
-    window = 250                 # ← size of the moving window (tweak as you like)
-    # compute rolling mean with a convolution trick
+    window = 250
     kernel = np.ones(window) / window
     rolling_avg = np.convolve(episode_lengths, kernel, mode="valid")
-
-    # x-values should line up with the *center* of each window
     x_vals = np.arange(window - 1, len(episode_lengths))
 
     plt.figure(figsize=(10, 5))

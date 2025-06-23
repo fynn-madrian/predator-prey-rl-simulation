@@ -1,20 +1,17 @@
+from collections import defaultdict
+import jsonlines
 import numpy as np
 from pettingzoo import ParallelEnv
 from gym import spaces
 from render import render
 import random
 import json
-import jsonlines
 import os
 import datetime
 from algorithms import get_model
 from environment_object import generate_all_objects, Field, place_non_overlapping
-from numba import njit
 from helpers import collides_with, convert_observation, point_to_segment_distance, first_hit_polyline, first_hit_circles
-import heapq
-
 from collections import deque, defaultdict
-from algorithms import load_model
 import tensorflow as tf
 
 MOVE_BIN_VALUES = [-1.0, -0.25, 0.0, 0.25, 1.0]
@@ -87,6 +84,7 @@ class CustomEnvironment(ParallelEnv):
                 "logs", self.timestamp)
         else:
             self.folder_path = folder_path
+        print(f"Logging to {self.folder_path}")
         self.model_save_path = os.path.join(self.folder_path, "models")
         self.scenario = self.config.get("scenario", "navigate")
         self.agent_data = self.generate_agents(self.scenario)
@@ -101,6 +99,10 @@ class CustomEnvironment(ParallelEnv):
             self.time_penalty = self.config.get("time_penalty", 0.025)
             self.progress_scaling = self.config.get("progress_scaling", 1.5)
             self.goal_bonus = self.config.get("goal_bonus", 20.0)
+
+        # Buffers for deferred logging
+        self._env_log_buffer = []
+        self._agent_log_buffer = defaultdict(list)
 
     def _sample_start_goal(self):
 
@@ -129,7 +131,28 @@ class CustomEnvironment(ParallelEnv):
         return (np.array([margin, margin], dtype=np.float32),
                 np.array([self.map_size - margin, self.map_size - margin], dtype=np.float32))
 
+    def flush_logs(self):
+        if self._env_log_buffer:
+            os.makedirs(self.folder_path, exist_ok=True)
+            env_log_path = os.path.join(self.folder_path, "environment.jsonl")
+            with jsonlines.open(env_log_path, 'a') as f:
+                for entry in self._env_log_buffer:
+                    f.write(entry)
+            for agent_id, entries in self._agent_log_buffer.items():
+                group = self.group_paths[self.agent_data[agent_id].group]
+                agent_log_dir = os.path.join(self.folder_path, group)
+                os.makedirs(agent_log_dir, exist_ok=True)
+                agent_log_path = os.path.join(
+                    agent_log_dir, f"agent_{agent_id}.jsonl")
+                with jsonlines.open(agent_log_path, 'a') as f:
+                    for entry in entries:
+                        f.write(entry)
+            # Clear buffers
+            self._env_log_buffer.clear()
+            self._agent_log_buffer.clear()
+
     def reset(self, seed=None, options=None, models=None):
+        self.flush_logs()
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
@@ -704,43 +727,38 @@ class CustomEnvironment(ParallelEnv):
     def log_step(self, pre_move_data, rewards, actions,
                  food_collected, predator_hit_reward,
                  hit_flags, dist_to_predator, terminations, truncations):
+        # Buffer the environment-level data
         env_data = {
             "step": self.step_count,
             "objects": self.get_object_dicts(),
             "goal": self.goal_pos.tolist() if getattr(self, "scenario", None) == "navigate" else None,
         }
-
-        env_json_path = os.path.join(self.folder_path, "environment.jsonl")
-        with jsonlines.open(env_json_path, "a") as f:
-            f.write(env_data)
-
+        self._env_log_buffer.append(env_data)
+        # Buffer each agent's data
         for agent_id in pre_move_data.keys():
-            termination_flag = terminations.get(agent_id, False)
-            truncation_flag = truncations.get(agent_id, False)
+            agent = self.agent_data[agent_id]
+            termination_flag = terminations.get(str(agent_id), False)
+            truncation_flag = truncations.get(str(agent_id), False)
             agent_data = {
                 "step": self.step_count,
-                "position":  pre_move_data[agent_id]["position"].tolist(),
-                "age":  pre_move_data[agent_id]["age"],
-                "x_bin": int(actions[agent_id]["x_dir"]),
-                "y_bin": int(actions[agent_id]["y_dir"]),
-                "spin_bin": int(actions[agent_id]["spin"]),
-                "velocity":  pre_move_data[agent_id]["velocity"].tolist(),
+                "position":  pre_move_data[str(agent_id)]["position"].tolist() if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["position"].tolist(),
+                "age":  pre_move_data[str(agent_id)]["age"] if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["age"],
+                "x_bin": int(actions[str(agent_id)]["x_dir"]) if isinstance(actions, dict) else int(actions[agent_id]["x_dir"]),
+                "y_bin": int(actions[str(agent_id)]["y_dir"]) if isinstance(actions, dict) else int(actions[agent_id]["y_dir"]),
+                "spin_bin": int(actions[str(agent_id)]["spin"]) if isinstance(actions, dict) else int(actions[agent_id]["spin"]),
+                "velocity":  pre_move_data[str(agent_id)]["velocity"].tolist() if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["velocity"].tolist(),
                 "food_collected": float(food_collected.get(agent_id, 0.0)),
                 "predator_hit_reward": float(predator_hit_reward.get(agent_id, 0.0)),
-                "reward": float(rewards[agent_id]),
-                "facing":  pre_move_data[agent_id]["facing"].tolist(),
-                "group":  pre_move_data[agent_id]["group"],
+                "reward": float(rewards[str(agent_id)]) if isinstance(rewards, dict) else float(rewards[agent_id]),
+                "facing":  pre_move_data[str(agent_id)]["facing"].tolist() if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["facing"].tolist(),
+                "group":  pre_move_data[str(agent_id)]["group"] if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["group"],
                 "termination": bool(termination_flag),
                 "truncation": bool(truncation_flag),
-                "staleness": pre_move_data[agent_id]["stale_count"],
-                "hit_by_predator": bool(hit_flags.get(agent_id, False)),
-                "dist_to_predator": dist_to_predator.get(agent_id, None),
+                "staleness": pre_move_data[str(agent_id)]["stale_count"] if isinstance(pre_move_data, dict) else pre_move_data[agent_id]["stale_count"],
+                "hit_by_predator": bool(hit_flags.get(str(agent_id), False)),
+                "dist_to_predator": dist_to_predator.get(str(agent_id), None),
             }
-
-            agent_json_path = os.path.join(
-                self.folder_path, self.group_paths[pre_move_data[agent_id]["group"]], f"agent_{agent_id}.jsonl")
-            with jsonlines.open(agent_json_path, "a") as f:
-                f.write(agent_data)
+            self._agent_log_buffer[agent_id].append(agent_data)
 
     def path_collides(self, start, end, steps=20, radius=0, ignore_objects=None):
 
