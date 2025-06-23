@@ -176,6 +176,10 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     time_alive = 0
     total_food_collected = 0
 
+    # For food pickup intervals
+    pickup_intervals = []
+    last_pickup_step = 0
+
     if model_path is None:
         raise ValueError("Must provide model_path to evaluate()")
     if env.scenario == "gather" or env.scenario == "navigate":
@@ -230,6 +234,10 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
         elif env.scenario == "gather":
             # Accumulate food collected from infos
             food = infos[prey_agent.ID].get("food_collected", 0)
+            if food > 0:
+                interval = step - last_pickup_step
+                pickup_intervals.append(interval)
+                last_pickup_step = step
             total_food_collected += food
             if done:
                 break
@@ -241,6 +249,12 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
             total_distance_to_goal += goal_dist
             predator_positions = [
                 agent.position for agent in env.agent_data.values() if agent.group == 0]
+            food = infos[prey_agent.ID].get("food_collected", 0)
+            if food > 0:
+                interval = step - last_pickup_step
+                pickup_intervals.append(interval)
+                last_pickup_step = step
+            total_food_collected += food
             if predator_positions:
                 dists = [np.linalg.norm(pos - prey_pos)
                          for pos in predator_positions]
@@ -250,9 +264,18 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
             else:
                 break
 
-    # Compute average time between pickups for gather scenario
-    avg_time_between = total_food_collected and (
-        total_steps / total_food_collected) or 0.0
+    # Compute average time between food pickups
+    if pickup_intervals:
+        avg_time_between_pickups = sum(
+            pickup_intervals) / len(pickup_intervals)
+    else:
+        avg_time_between_pickups = total_steps
+    # For navigate scenario, average time to goal; otherwise zero
+    if env.scenario == "navigate":
+        avg_time_to_goal = total_steps
+    else:
+        avg_time_to_goal = 0
+
     env.flush_logs()
     return {
         "total_reward": total_reward,
@@ -261,7 +284,8 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
         "average_distance_to_predator": total_distance_to_predator / steps if steps > 0 else 0.0,
         "time_alive": time_alive,
         "total_food_collected": total_food_collected,
-        "average_time_between_pickups": avg_time_between
+        "average_time_between_pickups": avg_time_between_pickups,
+        "average_time_to_goal": avg_time_to_goal
     }
 
 
@@ -294,7 +318,7 @@ def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="e
     # get best top_k runs based on total_reward and create videos
     results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
     top_runs = results[:top_k]
-    visualize = True
+    visualize = False
     if visualize:
         # Generate videos for all runs under the model directory
         model_name = os.path.splitext(os.path.basename(model_path))[0]
