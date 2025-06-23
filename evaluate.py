@@ -11,38 +11,6 @@ from algorithms import load_model, get_model
 from helpers import convert_observation, collides_with
 from render import render
 
-evaluation_config = {
-    "map_size": 100,
-    "base_population_per_group": 1,
-    "reproduction_cooldown": 100,
-    "max_age": 480,
-    "scenario": "full",
-    "map_config": {
-        "Rock": 6,
-        "River": 1,
-        "Field": 1,
-        "Forest": 0,
-        "Field_food_range": [10, 20],
-        "Field_base_radius": 12,
-        "Field_max_food": 25,
-        "River_base_radius": 5,
-        "Rock_base_radius": 2,
-    },
-    "render_enabled": True,
-    "predator_fov": 120,
-    "prey_fov": 180,
-    "vision_range": 20,
-    "vision_rays": 15,
-    "agent_detection_radius": 1,
-    "agent_collision_radius": 2,
-    "buffer_size": 16,
-    "mutation_rate": 0.0,
-    "sequence_length": 32,
-    "max_speed": 7.5,
-    "stale_truncation": 100,
-    "max_agent_count": 2,
-}
-
 
 # metrics for each scenario
 # gather: average time between food pickups, overall food collected
@@ -67,7 +35,7 @@ def reconstruct_objects(obj_dicts):
     return objs
 
 
-def create_video_for_run(log_dir, start_step=0, end_step=1000):
+def create_video_for_run(log_dir, start_step=0, end_step=1000, seed=None):
     tmp_dir = "tmp_visualizations"
     os.makedirs(tmp_dir, exist_ok=True)
 
@@ -146,7 +114,7 @@ def create_video_for_run(log_dir, start_step=0, end_step=1000):
 
     frame = cv2.imread(os.path.join(tmp_dir, images[0]))
     height, width, layers = frame.shape
-    video_name = os.path.join(log_dir, f'video_{start_step}.avi')
+    video_name = os.path.join(log_dir, f'video_{seed}.avi')
 
     video = cv2.VideoWriter(
         video_name, cv2.VideoWriter_fourcc(*'XVID'), 30, (width, height))
@@ -196,7 +164,6 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
 
     for step in range(steps):
         actions = {}
-        obs = observations[prey_agent.ID]
         for agent_id, agent in env.agent_data.items():
             obs = observations[agent_id]
             action, lstm_state = agent.get_action(obs)
@@ -289,7 +256,7 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     }
 
 
-def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
+def aggregate_and_log(model_path, num_runs=10, steps=1000, top_k=5, log_root="evaluation_logs"):
     model_name = os.path.splitext(os.path.basename(model_path))[0]
     model_dir = os.path.join(log_root, model_name)
     os.makedirs(model_dir, exist_ok=True)
@@ -315,21 +282,65 @@ def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="e
         for k, v in avg_metrics.items():
             mf.write(f"{k}: {v}\n")
 
-    # get best top_k runs based on total_reward and create videos
-    results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
+    # Select top runs according to scenario-specific criteria
+    scenario = evaluation_config["scenario"]
+    if scenario == "flee":
+        # longest time alive
+        results.sort(key=lambda x: x[1]["time_alive"], reverse=True)
+    elif scenario in ("gather", "navigate"):
+        # shortest episodes (fewest steps)
+        results.sort(key=lambda x: x[1]["average_steps"])
+    elif scenario == "full":
+        # highest reward
+        results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
+    else:
+        # fallback to highest reward
+        results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
     top_runs = results[:top_k]
-    visualize = False
+
+    visualize = True
     if visualize:
         # Generate videos for all runs under the model directory
         model_name = os.path.splitext(os.path.basename(model_path))[0]
         model_dir = os.path.join("evaluation_logs", model_name)
         for seed, _ in top_runs:
             print(f"Creating video for run {seed} in {model_dir}")
-            run_log_dir = os.path.join(model_dir, f"run_{seed}")
-            create_video_for_run(run_log_dir, start_step=0, end_step=steps)
+            run_dir = os.path.join(model_dir, f"run_{seed}")
+            create_video_for_run(run_dir, start_step=0,
+                                 end_step=steps, seed=seed)
 
 
 if __name__ == "__main__":
-
-    model_path = "/Users/fynnmadrian/Downloads/navigate_full.weights.h5"
+    evaluation_config = {
+        "map_size": 100,
+        "base_population_per_group": 1,
+        "reproduction_cooldown": 100,
+        "max_age": 480,
+        "scenario": "full",
+        "map_config": {
+            "Rock": 6,
+            "River": 1,
+            "Field": 1,
+            "Forest": 0,
+            "Field_food_range": [10, 20],
+            "Field_base_radius": 12,
+            "Field_max_food": 25,
+            "River_base_radius": 5,
+            "Rock_base_radius": 6,
+        },
+        "render_enabled": True,
+        "predator_fov": 120,
+        "prey_fov": 180,
+        "vision_range": 20,
+        "vision_rays": 15,
+        "agent_detection_radius": 1,
+        "agent_collision_radius": 2,
+        "buffer_size": 16,
+        "mutation_rate": 0.0,
+        "sequence_length": 32,
+        "max_speed": 7.5,
+        "stale_truncation": 100,
+        "max_agent_count": 2,
+    }
+    model_path = "/Users/fynnmadrian/Downloads/model/flee_full.weights.h5"
     aggregate_and_log(model_path)

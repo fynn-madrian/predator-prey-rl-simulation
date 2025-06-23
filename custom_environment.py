@@ -1,6 +1,7 @@
 from collections import defaultdict
 import jsonlines
 import numpy as np
+import heapq
 from pettingzoo import ParallelEnv
 from gym import spaces
 from render import render
@@ -443,58 +444,150 @@ class CustomEnvironment(ParallelEnv):
 
         return next_observations, rewards, terminations, truncations, infos
 
-    def find_path(self, start, goal, step_size=5, max_steps=50):
+    def find_path(self, start, goal, resolution=None, max_tries=4):
         """
-        Fast, greedy path approximation.
-        Attempts to move from start to goal with obstacle avoidance.
-        Returns a list of waypoints or None if blocked.
+        Robust path‑planner for predator agents.
+
+        * Attempts straight‑line shot first (cheap).
+        * Falls back to grid‑based A* with adaptive cell size that
+          expands if no path is found.
+        * Grid cells are marked blocked if **any point** in the cell
+          would collide with an impassable object, i.e. we dilate
+          obstacles by the predator’s collision radius so the search
+          never suggests passages that are physically impossible.
+        * Returns a list of way‑points (including `start` and `goal`)
+          or `None` if no path exists.
         """
-        direction = goal - start
-        distance = np.linalg.norm(direction)
-        if distance < step_size:
+        import heapq
+        import math
+
+        # ----- 0.  straight‑line fast path -----------------------------------
+        if not self.path_collides(start, goal,
+                                  radius=self.agent_collision_radius):
             return [start, goal]
 
-        direction = direction / distance
-        path = [start]
-        current = start.copy()
-        attempts = 0
+        # Default grid resolution ≈ 1–1.5× the collision radius, but
+        # never coarser than 2 units.
+        if resolution is None:
+            resolution = max(2.0, self.agent_collision_radius * 1.25)
 
-        while attempts < max_steps:
-            attempts += 1
-            next_point = current + direction * step_size
+        # Try progressively coarser grids if the fine one fails – this is
+        # usually enough to escape local minima around tight U‑shapes.
+        for attempt in range(max_tries):
+            grid_step = float(resolution * (1.5 ** attempt))
+            grid_w = int(math.ceil(self.map_size / grid_step))
+            grid_h = grid_w
 
-            # Clip to map bounds
-            if np.any(next_point < 0) or np.any(next_point >= self.map_size):
-                return None
+            def to_cell(pt):
+                ix = int(pt[0] // grid_step)
+                iy = int(pt[1] // grid_step)
+                # Clamp to valid grid indices
+                ix = min(max(ix, 0), grid_w - 1)
+                iy = min(max(iy, 0), grid_h - 1)
+                return (ix, iy)
 
-            # Check for collision
-            blocked = any(
-                not getattr(obj, "is_passable", True) and
-                collides_with(obj, next_point)
-                for obj in self.objects
-            )
+            def to_world(cell):
+                return np.array([(cell[0] + 0.5) * grid_step,
+                                 (cell[1] + 0.5) * grid_step],
+                                dtype=np.float32)
 
-            if blocked:
-                # Try minor detours: left/right/orthogonal
-                perp = np.array([-direction[1], direction[0]]
-                                ) * step_size * 0.75
-                for offset in [perp, -perp]:
-                    detour = current + direction * step_size + offset
-                    if np.all(0 <= detour) and np.all(detour < self.map_size):
-                        if not any(not getattr(obj, "is_passable", True) and
-                                   collides_with(obj, detour) for obj in self.objects):
-                            next_point = detour
-                            break
-                else:
-                    return None  # No viable detour
+            start_cell, goal_cell = to_cell(start), to_cell(goal)
+            if start_cell == goal_cell:
+                return [start, goal]
 
-            path.append(next_point)
-            current = next_point
+            # ------- 1.  build blocked mask with dilation -------------------
+            blocked = [[False]*grid_h for _ in range(grid_w)]
+            rad = self.agent_collision_radius
 
-            if np.linalg.norm(goal - current) < step_size:
-                path.append(goal)
-                return path
+            # helper: mark a cell and its neighbours within radius as blocked
+            def flag_cell(cx, cy):
+                cell_margin = int(math.ceil(rad / grid_step))
+                for dx in range(-cell_margin, cell_margin+1):
+                    for dy in range(-cell_margin, cell_margin+1):
+                        if (dx*dx + dy*dy)**0.5 * grid_step <= rad:
+                            nx, ny = cx+dx, cy+dy
+                            if 0 <= nx < grid_w and 0 <= ny < grid_h:
+                                blocked[nx][ny] = True
 
+            # iterate over all cells; only test centres that *might* collide
+            for x in range(grid_w):
+                cx = (x + 0.5) * grid_step
+                for y in range(grid_h):
+                    if blocked[x][y]:
+                        continue
+                    cy = (y + 0.5) * grid_step
+                    centre = np.array([cx, cy], dtype=np.float32)
+                    for obj in self.objects:
+                        if not getattr(obj, "is_passable", True):
+                            if collides_with(obj, centre):
+                                flag_cell(x, y)
+                                break   # no need to examine other objects
+
+            sx, sy = start_cell
+            gx, gy = goal_cell
+            if blocked[sx][sy] or blocked[gx][gy]:
+                # start or goal inside obstacle at this resolution – try coarser
+                continue
+
+            # ------- 2.  A* --------------------------------------------------
+            open_q = []
+            g_cost = {start_cell: 0.0}
+            came = {}
+            heapq.heappush(open_q, (0.0, start_cell))
+            closed = set()
+
+            def h(c):
+                # octile distance (diagonals cost √2)
+                dx = abs(c[0] - gx)
+                dy = abs(c[1] - gy)
+                return (dx + dy) + (math.sqrt(2) - 2) * min(dx, dy)
+
+            nbrs = [(1, 0), (-1, 0), (0, 1), (0, -1),
+                    (1, 1), (1, -1), (-1, 1), (-1, -1)]
+            while open_q:
+                _, curr = heapq.heappop(open_q)
+                if curr in closed:
+                    continue
+                if curr == goal_cell:
+                    # reconstruct
+                    path_cells = [curr]
+                    while curr in came:
+                        curr = came[curr]
+                        path_cells.append(curr)
+                    path_cells.reverse()
+                    way = [to_world(c) for c in path_cells]
+
+                    # ---- 3.  line‑of‑sight smoothing ------------------------
+                    smoothed = [way[0]]
+                    i = 0
+                    for j in range(2, len(way)):
+                        if self.path_collides(smoothed[-1], way[j],
+                                              radius=rad, steps=10):
+                            smoothed.append(way[j-1])
+                    smoothed.append(way[-1])
+                    return smoothed
+
+                closed.add(curr)
+                cx, cy = curr
+                for dx, dy in nbrs:
+                    nx, ny = cx+dx, cy+dy
+                    if nx < 0 or nx >= grid_w or ny < 0 or ny >= grid_h:
+                        continue
+                    if blocked[nx][ny]:
+                        continue
+                    step = math.sqrt(2) if dx and dy else 1.0
+                    g_new = g_cost[curr] + step
+                    nxt = (nx, ny)
+                    if g_new < g_cost.get(nxt, float('inf')):
+                        g_cost[nxt] = g_new
+                        came[nxt] = curr
+                        f = g_new + h(nxt)
+                        heapq.heappush(open_q, (f, nxt))
+
+            # No path at this resolution – retry with coarser cells
+            continue
+
+        # complete failure
         return None
 
     def generate_agents(self, scenario):
