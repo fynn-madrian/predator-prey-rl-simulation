@@ -42,7 +42,7 @@ action_space = spaces.Dict({
 
 
 class AgentNet(models.Model):
-    def __init__(self, total_steps=5_000_000, log_dir=None):
+    def __init__(self, total_steps=10_000_000, log_dir=None):
         super(AgentNet, self).__init__()
 
         # flat feature encoder

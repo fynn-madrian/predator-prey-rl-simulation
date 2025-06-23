@@ -8,7 +8,7 @@ import numpy as np
 
 simple_config = {
     "map_size": 100,
-    "max_age": 5_000_000,
+    "max_age": 10_000_000,
     "scenario": "gather",
     "map_config": {
         "Rock": 2,
@@ -55,7 +55,7 @@ for filename in os.listdir("visualizations_debug"):
         print(f"Error deleting file {file_path}: {e}")
 
 
-num_steps = 5_000_000
+num_steps = 10_000_000
 for step in range(num_steps):
     prey_obs = observations[prey_id]
     # predator_obs = observations[predator_id]

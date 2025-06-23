@@ -45,7 +45,7 @@ if __name__ == "__main__":
     # buffer for mean rewards over last 10 steps
     recent_mean_rewards = []
 
-    while step < 5_000:
+    while step < 10_000_000:
         step += 1
         actions = {}
         for agent_id, agent in env.agent_data.items():
@@ -118,13 +118,9 @@ if __name__ == "__main__":
                 "logs", current_run, "models", "prey")
 
             for agent_id, agent in env.agent_data.items():
-                if agent.group == 0:
-                    agent.model.save_weights(os.path.join(
-                        predator_model_path, f"agent_{agent_id}_model_{step}.weights.h5"))
-                else:
+                if agent.group == 1:
                     agent.model.save_weights(os.path.join(
                         prey_model_path, f"agent_{agent_id}_model_{step}.weights.h5"))
-                # navigation: treat reaching the goal as end of LSTM episode
 
         if any(done.values()):
 

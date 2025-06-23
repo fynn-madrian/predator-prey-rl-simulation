@@ -10,7 +10,7 @@ evaluation_config = {
     "map_size": 100,
     "base_population_per_group": 1,
     "reproduction_cooldown": 100,
-    "max_age": 5_000_000,
+    "max_age": 10_000_000,
     "scenario": "full",
     "map_config": {
         "Rock": 6,
