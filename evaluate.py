@@ -35,21 +35,25 @@ def reconstruct_objects(obj_dicts):
     return objs
 
 
-def create_video_for_run(log_dir, start_step=0, end_step=1000, seed=None):
+def create_video_for_run(log_dir, start_step=0, end_step=None, seed=None):
     tmp_dir = "tmp_visualizations"
     os.makedirs(tmp_dir, exist_ok=True)
 
     env_path = os.path.join(log_dir, "environment.jsonl")
+    # Read entire environment log once
+    with open(env_path, "r") as f:
+        all_env_lines = f.readlines()
+
+    last_logged_step = len(all_env_lines) - 1
+    # If caller supplied no end_step or an oversized one, clamp it
+    if end_step is None or end_step > last_logged_step:
+        end_step = last_logged_step
 
     env_data = []
-    with open(env_path, "r") as f:
-        for idx, line in enumerate(f):
-            entry = json.loads(line)
-            entry["step"] = idx
-            if start_step <= idx <= end_step:
-                env_data.append(entry)
-            if idx == end_step:
-                break
+    for idx in range(start_step, end_step + 1):
+        entry = json.loads(all_env_lines[idx])
+        entry["step"] = idx
+        env_data.append(entry)
 
     species_dirs = ["prey", "predator"]
     agent_data_by_id = {}
@@ -256,7 +260,7 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     }
 
 
-def aggregate_and_log(model_path, num_runs=10, steps=1000, top_k=5, log_root="evaluation_logs"):
+def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
     model_name = os.path.splitext(os.path.basename(model_path))[0]
     model_dir = os.path.join(log_root, model_name)
     os.makedirs(model_dir, exist_ok=True)
