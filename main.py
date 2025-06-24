@@ -40,12 +40,12 @@ if __name__ == "__main__":
     prey_agents = [agent for agent in env.agent_data.values()
                    if agent.group == 1]
     prey = prey_agents[0] if prey_agents else None
-    prey.model.load_weights(
-        "/Users/fynnmadrian/Downloads/navigate.h5")
+    """prey.model.load_weights(
+        "/Users/fynnmadrian/Downloads/navigate.h5")"""
     # buffer for mean rewards over last 10 steps
     recent_mean_rewards = []
 
-    while step < 10_000_000:
+    while step < 5_000_000:
         step += 1
         actions = {}
         for agent_id, agent in env.agent_data.items():

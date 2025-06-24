@@ -1,10 +1,10 @@
 {
   "map_size": 100,
-  "scenario": "full",
+  "scenario": "gather",
   "max_age": 480,
   "map_config": {
-    "Rock": 6,
-    "River": 1,
+    "Rock": 0,
+    "River": 0,
     "Field": 1,
     "Forest": 0,
     "River_length": 20,

@@ -320,17 +320,17 @@ if __name__ == "__main__":
         "base_population_per_group": 1,
         "reproduction_cooldown": 100,
         "max_age": 480,
-        "scenario": "full",
+        "scenario": "navigate",
         "map_config": {
             "Rock": 6,
             "River": 1,
-            "Field": 1,
+            "Field": 0,
             "Forest": 0,
             "Field_food_range": [10, 20],
             "Field_base_radius": 12,
             "Field_max_food": 25,
             "River_base_radius": 5,
-            "Rock_base_radius": 6,
+            "Rock_base_radius": 12,
         },
         "render_enabled": True,
         "predator_fov": 120,
@@ -346,5 +346,5 @@ if __name__ == "__main__":
         "stale_truncation": 100,
         "max_agent_count": 2,
     }
-    model_path = "/Users/fynnmadrian/Downloads/model/flee_full.weights.h5"
+    model_path = "/Users/fynnmadrian/Downloads/model/navigate.weights.h5"
     aggregate_and_log(model_path)

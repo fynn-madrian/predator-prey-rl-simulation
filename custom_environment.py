@@ -89,7 +89,7 @@ class CustomEnvironment(ParallelEnv):
         self.model_save_path = os.path.join(self.folder_path, "models")
         self.scenario = self.config.get("scenario", "navigate")
         self.agent_data = self.generate_agents(self.scenario)
-        self.collision_penalty = self.config.get("collision_penalty", -1)
+        self.collision_penalty = self.config.get("collision_penalty", 1)
         if self.scenario == "navigate":
 
             self.start_pos = np.array(
@@ -1037,7 +1037,7 @@ class Agent:
     W_APPROACH = 1
     _id_counter = 0
 
-    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=10_000_000):
+    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=5_000_000):
         self.group = group
         self.position = position
         self.age = age
@@ -1088,7 +1088,7 @@ class Agent:
         self.exploration_coef = 0.5
         self.exploration_damping = 0.7
 
-        self.cell_visit_threshold = 25
+        self.cell_visit_threshold = 15
         self.over_stay_penalty = 0.2
 
     @classmethod
@@ -1274,15 +1274,13 @@ class Agent:
 
                     # scale reward by how close we already are
                     closeness = 1.0 - \
-                        min(nearest_dist, AWARENESS_THRESHOLD) / \
-                        AWARENESS_THRESHOLD
-                    # (alternatively, use 1/(nearest_dist+ε) for sharper ramp-up near)
+                        min(nearest_dist, self.env.vision_range) / \
+                        self.env.vision_range
 
                     food_approach_reward = approach_delta \
                         * self.W_APPROACH \
                         * fill_factor \
                         * closeness
-
                     reward += food_approach_reward
 
                 # update for next frame
@@ -1308,14 +1306,10 @@ class Agent:
                 # after threshold, negative penalty grows with each extra visit
                 extra = cnt - self.cell_visit_threshold + 1
                 bonus = - self.over_stay_penalty * extra
-                bonus = max(bonus, -1.5)  # cap the penalty
+                bonus = max(bonus, -2)  # cap the penalty
 
             self.visit_counts[cell] += 1
             reward += bonus
-
-            if any(fill_pcts > 0.0):
-                reward += 0.5
-
             return reward
 
         elif self.env.scenario == "flee":
