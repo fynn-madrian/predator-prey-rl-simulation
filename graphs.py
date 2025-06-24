@@ -66,48 +66,58 @@ def compute_reward_by_window(run_dir, window_size):
     return rewards, time_points
 
 
-def plot_normalized_learning_curves(run_dirs, window_size=25000, save_path="graphs/normalized_learning_curves.png"):
+def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path="graphs/normalized_learning_curves.png"):
     print(
-        f"plot_normalized_learning_curves: run_dirs={run_dirs}, window_size={window_size}, save_path={save_path}")
+        f"plot_normalized_learning_curves: run_dirs_dict={run_dirs_dict}, window_size={window_size}, save_path={save_path}")
     os.makedirs("graphs", exist_ok=True)
     plt.figure(figsize=(12, 6))  # wider figure for readability
     # window size for moving average smoothing (increased for stronger smoothing)
     smooth_window = 11
 
-    for run_dir in run_dirs:
-        # allow run_dir to be a run root or a species dir; prefer prey subfolder if it exists
-        data_dir = run_dir
-        prey_dir = os.path.join(run_dir, "prey")
-        if os.path.isdir(prey_dir):
-            data_dir = prey_dir
-        print(f"  data_dir = {data_dir}")
-        rewards, time_points = compute_reward_by_window(data_dir, window_size)
-        print(
-            f" Processing {run_dir}: rewards={rewards}, time_points={time_points}")
-        if not rewards:
-            print(f"No data in {run_dir}, skipping.")
+    # iterate over categories, each mapping to multiple run paths
+    for category, run_paths in run_dirs_dict.items():
+        all_smoothed = []
+        all_time_points = []
+        # process each run in this category
+        for run_dir in run_paths:
+            data_dir = run_dir
+            prey_dir = os.path.join(run_dir, "prey")
+            if os.path.isdir(prey_dir):
+                data_dir = prey_dir
+            print(f"  [{category}] data_dir = {data_dir}")
+            rewards, time_points = compute_reward_by_window(
+                data_dir, window_size)
+            if not rewards:
+                print(f"  [{category}] no data in {data_dir}, skipping")
+                continue
+            # normalize per-run
+            min_r, max_r = min(rewards), max(rewards)
+            if max_r > min_r:
+                norm = [(r - min_r) / (max_r - min_r) for r in rewards]
+            else:
+                norm = [0] * len(rewards)
+            # smooth per-run
+            if len(norm) >= smooth_window:
+                smooth = np.convolve(norm, np.ones(
+                    smooth_window)/smooth_window, mode='same')
+            else:
+                smooth = norm
+            all_smoothed.append(smooth)
+            all_time_points.append(time_points)
+        # skip if no runs contributed
+        if not all_smoothed:
             continue
-        min_r, max_r = min(rewards), max(rewards)
-        print(f"  min_r = {min_r}, max_r = {max_r}")
-        if max_r > min_r:
-            norm_rewards = [(r - min_r) / (max_r - min_r) for r in rewards]
-        else:
-            norm_rewards = [0 for _ in rewards]
-        print(f"  norm_rewards = {norm_rewards}")
-        # apply moving average smoothing to reduce noise
-        if len(norm_rewards) >= smooth_window:
-            smoothed_rewards = np.convolve(norm_rewards, np.ones(
-                smooth_window)/smooth_window, mode='same')
-        else:
-            smoothed_rewards = norm_rewards
-        label = os.path.basename(run_dir.rstrip("/\\"))
-        # plot raw normalized data as dotted line (no legend) with same color as trend
-        line_raw, = plt.plot(time_points, norm_rewards,
-                             linestyle=':', linewidth=1, alpha=0.8)
-        color = line_raw.get_color()
-        # plot smoothed trend line
-        plt.plot(time_points, smoothed_rewards,
-                 label=label, linewidth=2, color=color)
+        # align lengths by trimming to shortest
+        min_len = min(len(s) for s in all_smoothed)
+        tp = all_time_points[0][:min_len]
+        arr = np.array([s[:min_len] for s in all_smoothed])
+        mean = arr.mean(axis=0)
+        std = arr.std(axis=0)
+        # plot mean trend
+        line, = plt.plot(tp, mean, label=category, linewidth=2)
+        # shaded deviation
+        plt.fill_between(tp, mean - std, mean + std,
+                         alpha=0.2, color=line.get_color())
 
     plt.xlabel("Training Step", fontsize=14)
     plt.ylabel("Normalized Reward", fontsize=14)
@@ -125,9 +135,9 @@ def plot_normalized_learning_curves(run_dirs, window_size=25000, save_path="grap
 # get mutliple runs and plot comparison
 
 if __name__ == "__main__":
-    # List your subtask run directories here
-    run_dirs = [
-        "/Users/fynnmadrian/plutonian_insects/good_flee",
-        "/Users/fynnmadrian/plutonian_insects/logs/2025-06-20-00-07-29"
-    ]
-    plot_normalized_learning_curves(run_dirs)
+    # mapping category names to lists of run directories
+    run_dirs_dict = {
+        "good_flee": ["/Users/fynnmadrian/plutonian_insects/good_flee"],
+        "recent_logs": ["/Users/fynnmadrian/plutonian_insects/logs/2025-06-20-00-07-29", "/Users/fynnmadrian/plutonian_insects/logs/2025-06-19-10-35-46"]
+    }
+    plot_normalized_learning_curves(run_dirs_dict)
