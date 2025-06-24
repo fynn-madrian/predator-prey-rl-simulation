@@ -1037,7 +1037,7 @@ class Agent:
     W_APPROACH = 1
     _id_counter = 0
 
-    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=10_000_000):
+    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=5_000_000):
         self.group = group
         self.position = position
         self.age = age
