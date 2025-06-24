@@ -11,7 +11,7 @@ run = sorted(os.listdir("logs"))
 run = [r for r in run if os.path.isdir(os.path.join("logs", r))][-1]
 path = os.path.join("logs", run)
 
-start_step = 15_500_000
+start_step = 1_500_000
 end_step = start_step + 1000  # Change this to your desired end step
 
 # Load environment data from JSONL
