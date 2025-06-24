@@ -1,10 +1,10 @@
 {
   "map_size": 100,
-  "scenario": "gather",
+  "scenario": "full",
   "max_age": 480,
   "map_config": {
-    "Rock": 0,
-    "River": 0,
+    "Rock": 6,
+    "River": 1,
     "Field": 1,
     "Forest": 0,
     "River_length": 20,
@@ -14,12 +14,11 @@
     "Rock_base_radius": 13,
     "Field_base_radius": 5,
     "Field_max_food": 25,
-    "obstacle_count": 2,
-    "Rock_radius": 2.0
+    "Rock_radius": 4.0
   },
   "time_penalty": 0.01,
   "progress_scaling": 1.5,
-  "collision_penalty": -3.0,
+  "collision_penalty": 3.0,
   "render_enabled": false,
   "predator_fov": 120,
   "prey_fov": 180,
