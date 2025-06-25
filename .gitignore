@@ -168,3 +168,5 @@ tf/*
 visualize_run.py
 .DS_Store
 evaluation_logs/*
+*.h5
+*.jsonl

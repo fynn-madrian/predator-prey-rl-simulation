@@ -11,8 +11,8 @@ simple_config = {
     "max_age": 480,
     "scenario": "full",
     "map_config": {
-        "Rock": 0,
-        "River": 0,
+        "Rock": 6,
+        "River": 1,
         "Field": 1,
         "Forest": 0,
         "Field_food_range": [10, 20],
@@ -39,10 +39,10 @@ observations, infos = env.reset()
 
 prey_agent = [a for a in env.agent_data.values() if a.group == 1][0]
 prey_id = prey_agent.ID
-"""predator_agent = [a for a in env.agent_data.values() if a.group == 0][0]
+predator_agent = [a for a in env.agent_data.values() if a.group == 0][0]
 predator_id = predator_agent.ID
 predator_agent.sequence_buffer = []
-"""
+
 prey_agent.sequence_buffer = []
 
 
@@ -58,9 +58,9 @@ for filename in os.listdir("visualizations_debug"):
 num_steps = 5_000_000
 for step in range(num_steps):
     prey_obs = observations[prey_id]
-    # predator_obs = observations[predator_id]
+    predator_obs = observations[predator_id]
 
-    manual_control = True
+    manual_control = False
     if manual_control:
         prey_action = {
             "x_dir": int(input("prey_action move_x bin [0-4]: ")),
@@ -71,23 +71,23 @@ for step in range(num_steps):
         prey_action, prey_lstm_state = prey_agent.get_action(prey_obs)
         prey_agent.last_lstm_state = prey_lstm_state
 
-    # predator_action, _ = predator_agent.get_action(predator_obs)
+    predator_action, _ = predator_agent.get_action(predator_obs)
 
     observations, rewards, terminations, truncations, infos = env.step({
         prey_id: prey_action,
-        # predator_id: predator_action
+        predator_id: predator_action
     })
     prey_obs = observations[prey_id]
     # print(env.scenario)
     print("Prey reward:", rewards[prey_id])
     # print rays as array, as well as support vector
-    """rays = prey_obs["rays"]
+    rays = prey_obs["rays"]
     rays = np.array(rays)
     # round rays to 2 decimal places
     rays = np.round(rays, 2)
 
     print(rays)
-
+    """
     print("good_vector:", prey_obs["good_vector"], "good_distance:", prey_obs["good_distance"],
           "bad_vector:", prey_obs["bad_vector"], "bad_distance:", prey_obs["bad_distance"])
     """
