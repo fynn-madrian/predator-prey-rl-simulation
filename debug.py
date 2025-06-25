@@ -8,7 +8,7 @@ import numpy as np
 
 simple_config = {
     "map_size": 100,
-    "max_age": 10_000_000,
+    "max_age": 480,
     "scenario": "full",
     "map_config": {
         "Rock": 6,
@@ -24,7 +24,7 @@ simple_config = {
     "render_enabled": True,
     "predator_fov": 120,
     "prey_fov": 180,
-    "vision_range": 20,
+    "vision_range": 35,
     "vision_rays": 15,
     "agent_detection_radius": 1,
     "agent_collision_radius": 2,
@@ -55,7 +55,7 @@ for filename in os.listdir("visualizations_debug"):
         print(f"Error deleting file {file_path}: {e}")
 
 
-num_steps = 10_000_000
+num_steps = 5_000_000
 for step in range(num_steps):
     prey_obs = observations[prey_id]
     predator_obs = observations[predator_id]
@@ -78,7 +78,7 @@ for step in range(num_steps):
         predator_id: predator_action
     })
     prey_obs = observations[prey_id]
-    print(env.scenario)
+    # print(env.scenario)
     print("Prey reward:", rewards[prey_id])
     # print rays as array, as well as support vector
     rays = prey_obs["rays"]
@@ -87,10 +87,10 @@ for step in range(num_steps):
     rays = np.round(rays, 2)
 
     print(rays)
-
+    """
     print("good_vector:", prey_obs["good_vector"], "good_distance:", prey_obs["good_distance"],
           "bad_vector:", prey_obs["bad_vector"], "bad_distance:", prey_obs["bad_distance"])
-
+    """
     if simple_config["render_enabled"]:
         render(env.objects, env.agent_data, goal=env.goal_pos)
 

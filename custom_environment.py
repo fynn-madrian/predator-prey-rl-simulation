@@ -14,7 +14,7 @@ from environment_object import generate_all_objects, Field, place_non_overlappin
 from helpers import collides_with, convert_observation, point_to_segment_distance, first_hit_polyline, first_hit_circles
 from collections import deque, defaultdict
 import tensorflow as tf
-
+import math
 MOVE_BIN_VALUES = [-1.0, -0.25, 0.0, 0.25, 1.0]
 ATK_BIN_VALUES = [-0.3, -0.1, 0.0, 0.1, 0.3]
 SPIN_BIN_VALUES = [-0.75,  0.0, 0.75]
@@ -50,6 +50,8 @@ class CustomEnvironment(ParallelEnv):
         self.map_config = self.config.get("map_config")
 
         self.objects = self.generate_map()
+        # cache for blocked grid per resolution
+        self._blocked_cache = {}
         self.max_age = self.config.get("max_age")
         self.max_speed = self.config.get("max_speed")
         self.predator_fov = self.config.get("predator_fov")
@@ -89,7 +91,8 @@ class CustomEnvironment(ParallelEnv):
         self.model_save_path = os.path.join(self.folder_path, "models")
         self.scenario = self.config.get("scenario", "navigate")
         self.agent_data = self.generate_agents(self.scenario)
-        self.collision_penalty = self.config.get("collision_penalty", -1)
+        self.collision_penalty = self.config.get("collision_penalty", 1)
+        self.time_penalty = self.config.get("time_penalty", 0.025)
         if self.scenario == "navigate":
 
             self.start_pos = np.array(
@@ -97,7 +100,6 @@ class CustomEnvironment(ParallelEnv):
             self.goal_pos = np.array(
                 self.config.get("goal_pos", [self.map_size-1, self.map_size-1]), dtype=np.float32)
             # Reward weights
-            self.time_penalty = self.config.get("time_penalty", 0.025)
             self.progress_scaling = self.config.get("progress_scaling", 1.5)
             self.goal_bonus = self.config.get("goal_bonus", 20.0)
 
@@ -153,6 +155,8 @@ class CustomEnvironment(ParallelEnv):
             self._agent_log_buffer.clear()
 
     def reset(self, seed=None, options=None, models=None):
+        # clear blocked grid cache when map regenerates
+        self._blocked_cache = {}
         self.flush_logs()
         if seed is not None:
             np.random.seed(seed)
@@ -445,31 +449,6 @@ class CustomEnvironment(ParallelEnv):
         return next_observations, rewards, terminations, truncations, infos
 
     def find_path(self, start, goal, resolution=None, max_tries=4):
-        """
-        Robust path‑planner for predator agents.
-
-        * Attempts straight‑line shot first (cheap).
-        * Falls back to grid‑based A* with adaptive cell size that
-          expands if no path is found.
-        * Grid cells are marked blocked if **any point** in the cell
-          would collide with an impassable object, i.e. we dilate
-          obstacles by the predator’s collision radius so the search
-          never suggests passages that are physically impossible.
-        * Returns a list of way‑points (including `start` and `goal`)
-          or `None` if no path exists.
-        """
-        import heapq
-        import math
-
-        # ----- 0.  straight‑line fast path -----------------------------------
-        if not self.path_collides(start, goal,
-                                  radius=self.agent_collision_radius):
-            return [start, goal]
-
-        # Default grid resolution ≈ 1–1.5× the collision radius, but
-        # never coarser than 2 units.
-        if resolution is None:
-            resolution = max(2.0, self.agent_collision_radius * 1.25)
 
         # Try progressively coarser grids if the fine one fails – this is
         # usually enough to escape local minima around tight U‑shapes.
@@ -477,6 +456,23 @@ class CustomEnvironment(ParallelEnv):
             grid_step = float(resolution * (1.5 ** attempt))
             grid_w = int(math.ceil(self.map_size / grid_step))
             grid_h = grid_w
+
+            # cache blocked cells per grid_step to avoid recomputation
+            cache_key = grid_step
+            if cache_key not in self._blocked_cache:
+                blocked = set()
+                for x in range(grid_w):
+                    for y in range(grid_h):
+                        centre = np.array([(x + 0.5) * grid_step,
+                                           (y + 0.5) * grid_step],
+                                          dtype=np.float32)
+                        for obj in self.objects:
+                            if not getattr(obj, "is_passable", True):
+                                if collides_with(obj, centre):
+                                    blocked.add((x, y))
+                                    break
+                self._blocked_cache[cache_key] = blocked
+            blocked_cells = self._blocked_cache[cache_key]
 
             def to_cell(pt):
                 ix = int(pt[0] // grid_step)
@@ -509,19 +505,11 @@ class CustomEnvironment(ParallelEnv):
                             if 0 <= nx < grid_w and 0 <= ny < grid_h:
                                 blocked[nx][ny] = True
 
-            # iterate over all cells; only test centres that *might* collide
+            # Mark blocked cells from cache
             for x in range(grid_w):
-                cx = (x + 0.5) * grid_step
                 for y in range(grid_h):
-                    if blocked[x][y]:
-                        continue
-                    cy = (y + 0.5) * grid_step
-                    centre = np.array([cx, cy], dtype=np.float32)
-                    for obj in self.objects:
-                        if not getattr(obj, "is_passable", True):
-                            if collides_with(obj, centre):
-                                flag_cell(x, y)
-                                break   # no need to examine other objects
+                    if (x, y) in blocked_cells:
+                        flag_cell(x, y)
 
             sx, sy = start_cell
             gx, gy = goal_cell
@@ -690,7 +678,7 @@ class CustomEnvironment(ParallelEnv):
 
     def cast_rays(self, agent):
         N, R, S = self.vision_rays, self.vision_range, 20
-        ray_thick = 1.0
+        ray_thick = 2.0
         fov = np.deg2rad(self.predator_fov if agent.group ==
                          0 else self.prey_fov)
 
@@ -1034,10 +1022,10 @@ class CustomEnvironment(ParallelEnv):
 
 
 class Agent:
-    W_APPROACH = 1
+    W_APPROACH = 2.5
     _id_counter = 0
 
-    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=10_000_000):
+    def __init__(self, group, position, env=None, model=None, facing=[1, 1], ID=None, age=0, max_speed=5, max_age=5_000_000):
         self.group = group
         self.position = position
         self.age = age
@@ -1088,8 +1076,8 @@ class Agent:
         self.exploration_coef = 0.5
         self.exploration_damping = 0.7
 
-        self.cell_visit_threshold = 25
-        self.over_stay_penalty = 0.2
+        self.cell_visit_threshold = 15
+        self.over_stay_penalty = 0.15
 
     @classmethod
     def _get_next_id(cls):
@@ -1159,7 +1147,7 @@ class Agent:
         self.model.optimize_model(buffer=buffer, hidden_states=hidden_states)
 
     def gather(self, food):
-        self.reward_boost += food * 2.5
+        self.reward_boost += food * 4
         self.stale_count = 0
 
     def increase_age(self):
@@ -1274,15 +1262,13 @@ class Agent:
 
                     # scale reward by how close we already are
                     closeness = 1.0 - \
-                        min(nearest_dist, AWARENESS_THRESHOLD) / \
-                        AWARENESS_THRESHOLD
-                    # (alternatively, use 1/(nearest_dist+ε) for sharper ramp-up near)
+                        min(nearest_dist, self.env.vision_range) / \
+                        self.env.vision_range
 
                     food_approach_reward = approach_delta \
                         * self.W_APPROACH \
                         * fill_factor \
                         * closeness
-
                     reward += food_approach_reward
 
                 # update for next frame
@@ -1308,14 +1294,12 @@ class Agent:
                 # after threshold, negative penalty grows with each extra visit
                 extra = cnt - self.cell_visit_threshold + 1
                 bonus = - self.over_stay_penalty * extra
-                bonus = max(bonus, -1.5)  # cap the penalty
+                bonus = max(bonus, 1.5)  # cap the penalty
 
             self.visit_counts[cell] += 1
             reward += bonus
-
-            if any(fill_pcts > 0.0):
-                reward += 0.5
-
+            # print("Reward:", reward)
+            reward -= self.env.time_penalty
             return reward
 
         elif self.env.scenario == "flee":
@@ -1621,7 +1605,7 @@ class Agent:
                 if not env.path_collides(pos, predicted_pos):
                     direction = (predicted_pos - pos) / (closest_dist + 1e-8)
                 else:
-                    path = env.find_path(pos, predicted_pos)
+                    path = env.find_path(pos, predicted_pos, resolution=5)
                     if path and len(path) > 1:
                         vec = path[1] - pos
                         nrm = np.linalg.norm(vec)

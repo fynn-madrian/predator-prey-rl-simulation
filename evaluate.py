@@ -234,7 +234,6 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
                 time_alive += 1
             else:
                 break
-
     # Compute average time between food pickups
     if pickup_intervals:
         avg_time_between_pickups = sum(
@@ -302,7 +301,7 @@ def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="e
         results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
     top_runs = results[:top_k]
 
-    visualize = True
+    visualize = False
     if visualize:
         # Generate videos for all runs under the model directory
         model_name = os.path.splitext(os.path.basename(model_path))[0]
@@ -320,17 +319,17 @@ if __name__ == "__main__":
         "base_population_per_group": 1,
         "reproduction_cooldown": 100,
         "max_age": 480,
-        "scenario": "full",
+        "scenario": "gather",
         "map_config": {
-            "Rock": 6,
-            "River": 1,
+            "Rock": 0,
+            "River": 0,
             "Field": 1,
             "Forest": 0,
             "Field_food_range": [10, 20],
             "Field_base_radius": 12,
             "Field_max_food": 25,
             "River_base_radius": 5,
-            "Rock_base_radius": 6,
+            "Rock_base_radius": 12,
         },
         "render_enabled": True,
         "predator_fov": 120,
@@ -346,5 +345,5 @@ if __name__ == "__main__":
         "stale_truncation": 100,
         "max_agent_count": 2,
     }
-    model_path = "/Users/fynnmadrian/Downloads/model/flee_full.weights.h5"
+    model_path = "logs/2025-06-25-13-21-41/models/prey/agent_1_model_5000000.weights.h5"
     aggregate_and_log(model_path)
