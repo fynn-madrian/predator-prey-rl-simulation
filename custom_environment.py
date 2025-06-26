@@ -779,6 +779,8 @@ class CustomEnvironment(ParallelEnv):
         return agent.get_reward(observation)
 
     def check_termination(self, agent):
+        if agent.group == 0:
+            return agent.stale_count >= 25
 
         if self.scenario == "navigate":
             dist = np.linalg.norm(agent.position - self.goal_pos)
@@ -1148,7 +1150,6 @@ class Agent:
 
     def gather(self, food):
         self.reward_boost += food * 4
-        self.stale_count = 0
 
     def increase_age(self):
         self.age += 1
@@ -1347,15 +1348,7 @@ class Agent:
 
         elif self.env.scenario == "full":
             # reward for time survived, food gathered, no collisions, approaching VISIBLE food
-            reward = -self.reward_penalty
-            self.reward_penalty = 0.0
-            fine_cell = (int(self.position[0]//15), int(self.position[1]//15))
-            count = self.visit_counts[fine_cell]
-            exp_reward = self.exploration_coef / \
-                ((count + 1) ** self.exploration_damping)
-            self.visit_counts[fine_cell] = count + 1
-            reward += exp_reward
-
+            reward = 0
             no_hit_reward = 0.0
             dist_delta = 0.0
             if not self.was_hit_this_step:
@@ -1393,7 +1386,7 @@ class Agent:
             food_approach_reward = 0.0
             fill_pcts = observation["rays"][:, -1]
             visible = float(np.max(fill_pcts))
-            AWARENESS_THRESHOLD = 15.0
+            AWARENESS_THRESHOLD = 25.0
             food_objs = [o for o in self.env.objects if o.is_food]
             if food_objs:
                 positions = np.vstack([o.position for o in food_objs])
@@ -1486,7 +1479,6 @@ class Agent:
                 self.velocity = slide_dir * 0.25
 
         actual_movement = np.linalg.norm(resolved_pos - self.position)
-        self.stale_count = 0 if actual_movement > 0.3 else self.stale_count + 1
 
         self.position = resolved_pos
         self.velocity *= 0.9
@@ -1559,19 +1551,6 @@ class Agent:
         self.velocity *= 0.75
 
         self.stale_count = 0 if actual_movement > 0.3 else self.stale_count + 1
-
-        # --- extra escape logic for predators boxed in by U‑shaped rivers ---
-        if self.group == 0 and self.stale_count >= 3:
-            # Rotate facing by a random small angle and take a modest forward step
-            angle = random.uniform(-np.pi / 2, np.pi / 2)
-            cos_a, sin_a = np.cos(angle), np.sin(angle)
-            fx, fy = self.facing
-            self.facing = np.array([fx * cos_a - fy * sin_a,
-                                    fx * sin_a + fy * cos_a])
-            self.facing /= (np.linalg.norm(self.facing) + 1e-8)
-            self.velocity = self.facing * 0.5
-            # Reset stale counter so repeated nudges aren’t immediate
-            self.stale_count = 0
 
         self.previous_position.append(self.position)
 
@@ -1686,7 +1665,7 @@ class Agent:
                 food_vec = dirs[idx]
                 food_dist = dists[idx] / max_distance
 
-                if dists[idx] >= 10.5 and np.max(rays[:, -1]) <= 0.0:
+                if dists[idx] >= 25 and np.max(rays[:, -1]) <= 0.0:
                     food_vec, food_dist = np.zeros(2, np.float32), 0.0
 
             if env.scenario == "gather":
