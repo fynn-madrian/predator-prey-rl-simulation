@@ -41,7 +41,7 @@ if __name__ == "__main__":
                    if agent.group == 1]
     prey = prey_agents[0] if prey_agents else None
     prey.model.load_weights(
-        "stumble_explore/models/prey/agent_1_model_5000000.weights.h5")
+        "flee.weights.h5")
     # buffer for mean rewards over last 10 steps
     recent_mean_rewards = []
 
