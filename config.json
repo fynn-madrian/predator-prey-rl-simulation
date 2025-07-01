@@ -1,7 +1,7 @@
 {
   "map_size": 100,
   "scenario": "full",
-  "max_age": 720,
+  "max_age": 512,
   "map_config": {
     "Rock": 6,
     "River": 1,
@@ -11,7 +11,7 @@
     "Field_food_range": [20, 20],
     "Forest_base_radius": 10,
     "River_base_radius": 4,
-    "Rock_base_radius": 13,
+    "Rock_base_radius": 4,
     "Field_base_radius": 7,
     "Field_max_food": 25,
     "Rock_radius": 1.0
@@ -26,7 +26,7 @@
   "vision_rays": 15,
   "agent_detection_radius": 10,
   "agent_collision_radius": 2.0,
-  "buffer_size": 256,
-  "sequence_length": 96,
+  "buffer_size": 512,
+  "sequence_length": 128,
   "max_speed": 7.5
 }

@@ -1351,15 +1351,11 @@ class Agent:
             reward = 0
             no_hit_reward = 0.0
             dist_delta = 0.0
-            if not self.was_hit_this_step:
-                self.steps_since_hit += 1
-                no_hit_reward = self.no_hit_reward_increment * self.steps_since_hit
-                if no_hit_reward > self.no_hit_reward_cap:
-                    no_hit_reward = self.no_hit_reward_cap
-                reward += no_hit_reward
-            else:
-                self.steps_since_hit = 0
+            if self.was_hit_this_step:
                 reward -= 10.0
+
+            # time penalty
+            reward -= self.env.time_penalty
 
             # current distance to closest predator
             predators = [a for a in self.env.agent_data.values()
@@ -1375,7 +1371,7 @@ class Agent:
             # reward based on delta distance to closest predator
             if self.prev_dist is not None and self.dist_to_predator is not None:
                 dist_delta = self.dist_to_predator - self.prev_dist
-                reward += dist_delta * 0.25
+                reward += dist_delta * 0.1
             self.prev_dist = self.dist_to_predator
             # reward for food gathered
             food_gathered = self.reward_boost
@@ -1437,11 +1433,6 @@ class Agent:
             else:
                 # Reset last_food_dist when not aware
                 self.last_food_dist = None
-
-            # reward only when visibility genuinely improves
-            if visible > self.last_visible_fill + 0.05:
-                reward += 2.0 * (visible - self.last_visible_fill)
-            self.last_visible_fill = visible
 
             return reward
 
@@ -1584,7 +1575,7 @@ class Agent:
                 if not env.path_collides(pos, predicted_pos):
                     direction = (predicted_pos - pos) / (closest_dist + 1e-8)
                 else:
-                    path = env.find_path(pos, predicted_pos, resolution=5)
+                    path = env.find_path(pos, predicted_pos, resolution=3)
                     if path and len(path) > 1:
                         vec = path[1] - pos
                         nrm = np.linalg.norm(vec)

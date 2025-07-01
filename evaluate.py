@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import os
 import numpy as np
@@ -241,7 +242,7 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     else:
         avg_time_between_pickups = total_steps
     # For navigate scenario, average time to goal; otherwise zero
-    if env.scenario == "navigate":
+    if env.scenario == "navigate" or env.scenario == "full":
         avg_time_to_goal = total_steps
     else:
         avg_time_to_goal = 0
@@ -250,8 +251,8 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     return {
         "total_reward": total_reward,
         "average_steps": total_steps / steps if steps > 0 else 0.0,
-        "average_distance_to_goal": total_distance_to_goal / steps if steps > 0 else 0.0,
-        "average_distance_to_predator": total_distance_to_predator / steps if steps > 0 else 0.0,
+        "average_distance_to_goal": total_distance_to_goal / total_steps if total_steps > 0 else 0.0,
+        "average_distance_to_predator": total_distance_to_predator / total_steps if total_steps > 0 else 0.0,
         "time_alive": time_alive,
         "total_food_collected": total_food_collected,
         "average_time_between_pickups": avg_time_between_pickups,
@@ -259,58 +260,68 @@ def evaluate(seed, steps=480, log_dir=None, model_path=None):
     }
 
 
-def aggregate_and_log(model_path, num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
-    model_name = os.path.splitext(os.path.basename(model_path))[0]
-    model_dir = os.path.join(log_root, model_name)
-    os.makedirs(model_dir, exist_ok=True)
-    results = []
-    for seed in range(num_runs):
-        run_log_dir = os.path.join(model_dir, f"run_{seed}")
-        res = evaluate(seed, steps, log_dir=run_log_dir,
-                       model_path=model_path)
-        results.append((seed, res))
-    # Compute average metrics
-    metrics_sum = {}
-    for _, res in results:
-        for k, v in res.items():
-            metrics_sum[k] = metrics_sum.get(k, 0) + v
-    avg_metrics = {k: metrics_sum[k]/num_runs for k in metrics_sum}
-    # Write metrics and config/seeds to text file
-    metrics_file = os.path.join(model_dir, "metrics.txt")
-    with open(metrics_file, "w") as mf:
-        mf.write(f"Model: {model_path}\n")
-        mf.write(f"Config: {evaluation_config}\n")
-        mf.write(f"Seeds: {list(range(num_runs))}\n")
-        mf.write("Average Metrics:\n")
-        for k, v in avg_metrics.items():
-            mf.write(f"{k}: {v}\n")
+def aggregate_and_log(models_dict, num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
+    os.makedirs("evaluate_comparison", exist_ok=True)
+    all_model_results = {}
 
-    # Select top runs according to scenario-specific criteria
-    scenario = evaluation_config["scenario"]
-    if scenario == "flee":
-        # longest time alive
-        results.sort(key=lambda x: x[1]["time_alive"], reverse=True)
-    elif scenario in ("gather", "navigate"):
-        # shortest episodes (fewest steps)
-        results.sort(key=lambda x: x[1]["average_steps"])
-    elif scenario == "full":
-        # highest reward
-        results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
-    else:
-        # fallback to highest reward
-        results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
-    top_runs = results[:top_k]
-
-    visualize = False
-    if visualize:
-        # Generate videos for all runs under the model directory
+    for label, model_path in models_dict.items():
         model_name = os.path.splitext(os.path.basename(model_path))[0]
-        model_dir = os.path.join("evaluation_logs", model_name)
-        for seed, _ in top_runs:
-            print(f"Creating video for run {seed} in {model_dir}")
-            run_dir = os.path.join(model_dir, f"run_{seed}")
-            create_video_for_run(run_dir, start_step=0,
-                                 end_step=steps, seed=seed)
+        model_dir = os.path.join(log_root, model_name)
+        os.makedirs(model_dir, exist_ok=True)
+        results = []
+        for seed in range(num_runs):
+            run_log_dir = os.path.join(model_dir, f"run_{seed}")
+            res = evaluate(seed, steps, log_dir=run_log_dir,
+                           model_path=model_path)
+            results.append((seed, res))
+        metrics_sum = {}
+        for _, res in results:
+            for k, v in res.items():
+                metrics_sum[k] = metrics_sum.get(k, 0) + v
+        avg_metrics = {k: metrics_sum[k]/num_runs for k in metrics_sum}
+        all_model_results[label] = avg_metrics
+
+        metrics_file = os.path.join(model_dir, "metrics.txt")
+        with open(metrics_file, "w") as mf:
+            mf.write(f"Model: {model_path}\n")
+            mf.write(f"Config: {evaluation_config}\n")
+            mf.write(f"Seeds: {list(range(num_runs))}\n")
+            mf.write("Average Metrics:\n")
+            for k, v in avg_metrics.items():
+                mf.write(f"{k}: {v}\n")
+
+        scenario = evaluation_config["scenario"]
+        if scenario == "flee":
+            results.sort(key=lambda x: x[1]["time_alive"], reverse=True)
+        elif scenario in ("gather", "navigate"):
+            results.sort(key=lambda x: x[1]["average_steps"])
+        elif scenario == "full":
+            results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
+        else:
+            results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
+
+        top_runs = results[:top_k]
+        video_dir = os.path.join(model_dir, "videos")
+        os.makedirs(video_dir, exist_ok=True)
+        render = False
+        if render:
+            for seed, _ in top_runs:
+                print(f"Creating video for run {seed} in {model_dir}")
+                run_dir = os.path.join(model_dir, f"run_{seed}")
+                create_video_for_run(run_dir, start_step=0,
+                                     end_step=steps, seed=seed)
+
+    for metric in all_model_results[list(models_dict.keys())[0]].keys():
+        labels = list(all_model_results.keys())
+        values = [all_model_results[label][metric] for label in labels]
+        plt.figure()
+        plt.bar(labels, values)
+        plt.ylabel(metric)
+        plt.title(f'Metric Comparison: {metric}')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f"evaluate_comparison/{metric}_comparison.png")
+        plt.close()
 
 
 if __name__ == "__main__":
@@ -319,17 +330,17 @@ if __name__ == "__main__":
         "base_population_per_group": 1,
         "reproduction_cooldown": 100,
         "max_age": 480,
-        "scenario": "gather",
+        "scenario": "full",
         "map_config": {
-            "Rock": 0,
-            "River": 0,
+            "Rock": 6,
+            "River": 1,
             "Field": 1,
             "Forest": 0,
             "Field_food_range": [10, 20],
             "Field_base_radius": 12,
             "Field_max_food": 25,
             "River_base_radius": 5,
-            "Rock_base_radius": 12,
+            "Rock_base_radius": 5,
         },
         "render_enabled": True,
         "predator_fov": 120,
@@ -345,5 +356,9 @@ if __name__ == "__main__":
         "stale_truncation": 100,
         "max_agent_count": 2,
     }
-    model_path = "logs/2025-06-25-13-21-41/models/prey/agent_1_model_5000000.weights.h5"
-    aggregate_and_log(model_path)
+    models_dict = {
+        "179": "/Users/fynnmadrian/Downloads/179.weights.h5",
+        "215": "/Users/fynnmadrian/Downloads/215.weights.h5",
+        "local": "logs/2025-06-30-23-48-16/models/prey/agent_1_model_5000000.weights.h5",
+    }
+    aggregate_and_log(models_dict)

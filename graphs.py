@@ -19,6 +19,7 @@ def compute_reward_by_window(run_dir, window_size):
             with open(path, 'r') as f:
                 count = sum(1 for _ in f)
             max_step = max(max_step, count)
+            max_step = min(max_step, 5_000_000)
         except Exception:
             continue
 
@@ -74,6 +75,19 @@ def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path=
     # window size for moving average smoothing (increased for stronger smoothing)
     smooth_window = 11
 
+    # First pass: compute global min and max reward across all runs
+    all_rewards = []
+    for run_paths in run_dirs_dict.values():
+        for run_dir in run_paths:
+            data_dir = run_dir
+            prey_dir = os.path.join(run_dir, "prey")
+            if os.path.isdir(prey_dir):
+                data_dir = prey_dir
+            rewards, _ = compute_reward_by_window(data_dir, window_size)
+            all_rewards.extend(rewards)
+    global_min_r = min(all_rewards) if all_rewards else 0
+    global_max_r = max(all_rewards) if all_rewards else 1
+
     # determine if any category has multiple runs
     mixed_modes = any(len(paths) > 1 for paths in run_dirs_dict.values())
 
@@ -92,24 +106,29 @@ def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path=
             if not rewards:
                 print(f"  [{category}] no data in {data_dir}, skipping")
                 continue
-            # normalize per-run
-            min_r, max_r = min(rewards), max(rewards)
-            if max_r > min_r:
-                norm = [(r - min_r) / (max_r - min_r) for r in rewards]
+            # normalize per-run using run's own min and global max
+            run_min = min(rewards)
+            if global_max_r > run_min:
+                norm = [(r - run_min) / (global_max_r - run_min)
+                        for r in rewards]
             else:
                 norm = [0] * len(rewards)
             # smooth per-run
             if len(norm) >= smooth_window:
-                smooth = np.convolve(norm, np.ones(
-                    smooth_window)/smooth_window, mode='same')
+                pad = smooth_window // 2
+                padded = np.pad(norm, (pad, pad), mode='edge')
+                smooth = np.convolve(padded, np.ones(
+                    smooth_window)/smooth_window, mode='valid')
+                smooth_time = time_points
             else:
                 smooth = norm
+                smooth_time = time_points
             # plot raw normalized data as dotted line
             line_raw, = plt.plot(
                 time_points, norm, linestyle=':', linewidth=1, alpha=0.8)
             color = line_raw.get_color()
             # plot smoothed trend line
-            plt.plot(time_points, smooth, label=category,
+            plt.plot(smooth_time, smooth, label=category,
                      linewidth=2, color=color)
         else:
             # multi-run logic: mean trend and deviation band
@@ -126,18 +145,23 @@ def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path=
                 if not rewards:
                     print(f"  [{category}] no data in {data_dir}, skipping")
                     continue
-                # normalize per-run
-                min_r, max_r = min(rewards), max(rewards)
-                if max_r > min_r:
-                    norm = [(r - min_r) / (max_r - min_r) for r in rewards]
+                # normalize per-run using run's own min and global max
+                run_min = min(rewards)
+                if global_max_r > run_min:
+                    norm = [(r - run_min) / (global_max_r - run_min)
+                            for r in rewards]
                 else:
                     norm = [0] * len(rewards)
                 # smooth per-run
                 if len(norm) >= smooth_window:
-                    smooth = np.convolve(norm, np.ones(
-                        smooth_window)/smooth_window, mode='same')
+                    pad = smooth_window // 2
+                    padded = np.pad(norm, (pad, pad), mode='edge')
+                    smooth = np.convolve(padded, np.ones(
+                        smooth_window)/smooth_window, mode='valid')
+                    smooth_time = time_points
                 else:
                     smooth = norm
+                    smooth_time = time_points
                 all_smoothed.append(smooth)
                 all_time_points.append(time_points)
             # skip if no runs contributed
@@ -173,7 +197,8 @@ def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path=
 if __name__ == "__main__":
     # mapping category names to lists of run directories
     run_dirs_dict = {
-        "good_flee": ["/Users/fynnmadrian/plutonian_insects/good_flee"],
-        "recent_logs": ["/Users/fynnmadrian/plutonian_insects/logs/2025-06-20-00-07-29"]
+        "v1": ["stumble_explore"],
+        "v2": ["explore_1"],
+        "v3": ["/Users/fynnmadrian/Downloads/2025-06-06-10-10-49"],
     }
     plot_normalized_learning_curves(run_dirs_dict)
