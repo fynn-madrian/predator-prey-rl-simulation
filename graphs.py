@@ -1,15 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
-# Helper and plotting functions
 import os
 import json
-
+from matplotlib.patches import Patch
 
 def compute_reward_by_window(run_dir, window_size):
-    print(
-        f"compute_reward_by_window: run_dir={run_dir}, window_size={window_size}")
-    # Scan all .jsonl files in run_dir for reward per line
+    """
+    Compute average reward in non-overlapping windows of size `window_size`.
+    """
     max_step = 0
     for fname in os.listdir(run_dir):
         path = os.path.join(run_dir, fname)
@@ -22,21 +20,14 @@ def compute_reward_by_window(run_dir, window_size):
             max_step = min(max_step, 5_000_000)
         except Exception:
             continue
-
-    print(f"  max_step = {max_step}")
-
     if max_step <= 0:
         return [], []
 
     num_windows = (max_step + window_size - 1) // window_size
-    time_points = [min(window_size * i, max_step)
-                   for i in range(1, num_windows + 1)]
+    time_points = [min(window_size * i, max_step) for i in range(1, num_windows + 1)]
 
-    print(f"  num_windows = {num_windows}, time_points = {time_points}")
-
-    reward_sums = [0] * num_windows
+    reward_sums = [0.0] * num_windows
     reward_counts = [0] * num_windows
-
     for fname in os.listdir(run_dir):
         path = os.path.join(run_dir, fname)
         try:
@@ -46,159 +37,126 @@ def compute_reward_by_window(run_dir, window_size):
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    window_idx = idx // window_size
-                    if window_idx >= num_windows:
-                        continue
-                    reward_sums[window_idx] += data.get("reward", 0)
-                    reward_counts[window_idx] += 1
+                    w = idx // window_size
+                    if w < num_windows:
+                        reward_sums[w] += data.get("reward", 0)
+                        reward_counts[w] += 1
         except Exception:
             continue
 
-    print(f"  reward_sums = {reward_sums}")
-    print(f"  reward_counts = {reward_counts}")
-
-    rewards = []
-    for i in range(num_windows):
-        if reward_counts[i]:
-            rewards.append(reward_sums[i] / reward_counts[i])
-        else:
-            rewards.append(0)
-    print(f"  rewards = {rewards}")
+    rewards = [(reward_sums[i] / reward_counts[i]) if reward_counts[i] else 0.0 for i in range(num_windows)]
     return rewards, time_points
 
 
-def plot_normalized_learning_curves(run_dirs_dict, window_size=25000, save_path="graphs/normalized_learning_curves.png"):
-    print(
-        f"plot_normalized_learning_curves: run_dirs_dict={run_dirs_dict}, window_size={window_size}, save_path={save_path}")
-    os.makedirs("graphs", exist_ok=True)
-    plt.figure(figsize=(12, 6))  # wider figure for readability
-    # window size for moving average smoothing (increased for stronger smoothing)
+def plot_normalized_learning_curves(run_dirs_dict, window_size=50000, save_path="graphs/normalized_learning_curves.png"):
+    """
+    Plot normalized learning curves with mean and ±1 standard deviation shading.
+
+    - Y-axis fixed from 0 to 1.
+    - X-axis starts at 0.
+    - Shaded area indicates ±1 std dev across runs.
+    - Uses a consistent color scheme (tab10) for categories.
+    - High-DPI output suitable for publication.
+    """
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.figure(figsize=(12, 6), dpi=300)
+
     smooth_window = 11
-
-    # First pass: compute global min and max reward across all runs
     all_rewards = []
-    for run_paths in run_dirs_dict.values():
-        for run_dir in run_paths:
-            data_dir = run_dir
-            prey_dir = os.path.join(run_dir, "prey")
-            if os.path.isdir(prey_dir):
-                data_dir = prey_dir
-            rewards, _ = compute_reward_by_window(data_dir, window_size)
-            all_rewards.extend(rewards)
-    global_min_r = min(all_rewards) if all_rewards else 0
-    global_max_r = max(all_rewards) if all_rewards else 1
+    for paths in run_dirs_dict.values():
+        for d in paths:
+            data_dir = os.path.join(d, "prey") if os.path.isdir(os.path.join(d, "prey")) else d
+            r, _ = compute_reward_by_window(data_dir, window_size)
+            all_rewards.extend(r)
+    global_min, global_max = (min(all_rewards), max(all_rewards)) if all_rewards else (0.0, 1.0)
 
-    # determine if any category has multiple runs
-    mixed_modes = any(len(paths) > 1 for paths in run_dirs_dict.values())
+    mixed = any(len(v) > 1 for v in run_dirs_dict.values())
+    cmap = plt.get_cmap('tab10')
 
-    for category, run_paths in run_dirs_dict.items():
-        # if mixing modes (some categories have multiple runs), force multi-run logic for all
-        if not mixed_modes and len(run_paths) == 1:
-            # single-run logic: dotted raw plus solid smoothed trend
-            run_dir = run_paths[0]
-            data_dir = run_dir
-            prey_dir = os.path.join(run_dir, "prey")
-            if os.path.isdir(prey_dir):
-                data_dir = prey_dir
-            print(f"  [{category}] data_dir = {data_dir}")
-            rewards, time_points = compute_reward_by_window(
-                data_dir, window_size)
+    for idx, (cat, paths) in enumerate(run_dirs_dict.items()):
+        color = cmap(idx)
+        if not mixed and len(paths) == 1:
+            d = paths[0]
+            data_dir = os.path.join(d, "prey") if os.path.isdir(os.path.join(d, "prey")) else d
+            rewards, times = compute_reward_by_window(data_dir, window_size)
             if not rewards:
-                print(f"  [{category}] no data in {data_dir}, skipping")
                 continue
-            # normalize per-run using run's own min and global max
-            run_min = min(rewards)
-            if global_max_r > run_min:
-                norm = [(r - run_min) / (global_max_r - run_min)
-                        for r in rewards]
-            else:
-                norm = [0] * len(rewards)
-            # smooth per-run
+            norm = [(r - global_min) / (global_max - global_min) if global_max > global_min else 0.0 for r in rewards]
             if len(norm) >= smooth_window:
                 pad = smooth_window // 2
                 padded = np.pad(norm, (pad, pad), mode='edge')
-                smooth = np.convolve(padded, np.ones(
-                    smooth_window)/smooth_window, mode='valid')
-                smooth_time = time_points
+                smooth = np.convolve(padded, np.ones(smooth_window)/smooth_window, mode='valid')
+                times_smooth = times
             else:
-                smooth = norm
-                smooth_time = time_points
-            # plot raw normalized data as dotted line
-            line_raw, = plt.plot(
-                time_points, norm, linestyle=':', linewidth=1, alpha=0.8)
-            color = line_raw.get_color()
-            # plot smoothed trend line
-            plt.plot(smooth_time, smooth, label=category,
-                     linewidth=2, color=color)
+                smooth, times_smooth = norm, times
+            plt.plot(times, norm, linestyle=':', linewidth=1, alpha=0.8, color=color)
+            plt.plot(times_smooth, smooth, label=cat, linewidth=2, color=color)
         else:
-            # multi-run logic: mean trend and deviation band
-            all_smoothed = []
-            all_time_points = []
-            for run_dir in run_paths:
-                data_dir = run_dir
-                prey_dir = os.path.join(run_dir, "prey")
-                if os.path.isdir(prey_dir):
-                    data_dir = prey_dir
-                print(f"  [{category}] data_dir = {data_dir}")
-                rewards, time_points = compute_reward_by_window(
-                    data_dir, window_size)
+            sm_list, tp_list = [], []
+            for d in paths:
+                data_dir = os.path.join(d, "prey") if os.path.isdir(os.path.join(d, "prey")) else d
+                rewards, times = compute_reward_by_window(data_dir, window_size)
                 if not rewards:
-                    print(f"  [{category}] no data in {data_dir}, skipping")
                     continue
-                # normalize per-run using run's own min and global max
-                run_min = min(rewards)
-                if global_max_r > run_min:
-                    norm = [(r - run_min) / (global_max_r - run_min)
-                            for r in rewards]
-                else:
-                    norm = [0] * len(rewards)
-                # smooth per-run
+                norm = [(r - global_min) / (global_max - global_min) if global_max > global_min else 0.0 for r in rewards]
                 if len(norm) >= smooth_window:
                     pad = smooth_window // 2
                     padded = np.pad(norm, (pad, pad), mode='edge')
-                    smooth = np.convolve(padded, np.ones(
-                        smooth_window)/smooth_window, mode='valid')
-                    smooth_time = time_points
+                    smooth = np.convolve(padded, np.ones(smooth_window)/smooth_window, mode='valid')
+                    times_smooth = times
                 else:
-                    smooth = norm
-                    smooth_time = time_points
-                all_smoothed.append(smooth)
-                all_time_points.append(time_points)
-            # skip if no runs contributed
-            if not all_smoothed:
+                    smooth, times_smooth = norm, times
+                sm_list.append(smooth)
+                tp_list.append(times_smooth)
+            if not sm_list:
                 continue
-            # align lengths by trimming to shortest
-            min_len = min(len(s) for s in all_smoothed)
-            tp = all_time_points[0][:min_len]
-            arr = np.array([s[:min_len] for s in all_smoothed])
-            mean = arr.mean(axis=0)
-            std = arr.std(axis=0)
-            # plot mean trend
-            line, = plt.plot(tp, mean, label=category, linewidth=2)
-            # shaded deviation
-            plt.fill_between(tp, mean - std, mean + std,
-                             alpha=0.2, color=line.get_color())
+            min_len = min(len(s) for s in sm_list)
+            tp = tp_list[0][:min_len]
+            runs_array = np.array([s[:min_len] for s in sm_list])
+            mean = runs_array.mean(axis=0)
+            std = runs_array.std(axis=0, ddof=1)
+            plt.plot(tp, mean, label=cat, linewidth=2, color=color)
+            plt.fill_between(tp, mean - std, mean + std, alpha=0.2, color=color)
 
     plt.xlabel("Training Step", fontsize=14)
     plt.ylabel("Normalized Reward", fontsize=14)
     plt.title("Normalized Learning Curves Comparison", fontsize=16)
-    plt.legend(fontsize=12)
+
+    plt.xlim(left=0)
+    plt.ylim(0, 1)
+
+    handles, labels = plt.gca().get_legend_handles_labels()
+    std_patch = Patch(facecolor='grey', alpha=0.2, label='±1 std dev')
+    handles.append(std_patch)
+    plt.legend(handles=handles, fontsize=12)
+
     plt.grid(alpha=0.3, linestyle='--')
     plt.xticks(fontsize=12)
     plt.yticks(fontsize=12)
     plt.tight_layout()
-    plt.savefig(save_path)
+
+    plt.savefig(save_path, dpi=300)
     plt.close()
     print(f"Saved: {save_path}")
 
 
-# get mutliple runs and plot comparison
-
 if __name__ == "__main__":
-    # mapping category names to lists of run directories
     run_dirs_dict = {
-        "v1": ["stumble_explore"],
-        "v2": ["explore_1"],
-        "v3": ["/Users/fynnmadrian/Downloads/2025-06-06-10-10-49"],
+        "pretrained flee": [
+            "/home/fynnm/full_models/179/2025-07-01-18-22-24",
+            "/home/fynnm/full_models/179/2025-07-02-14-41-52",
+        ],
+        "pretrained navigation": [
+            "/home/fynnm/full_models/215/2025-07-01-18-25-14",
+            "/home/fynnm/full_models/215/2025-07-02-14-46-48",
+        ],
+        "pretrained exploration": [
+            "/home/fynnm/full_models/models_mac/2025-07-02-14-41-30",
+            "/home/fynnm/full_models/models_mac/2025-07-03-22-53-28",
+        ],
+        "from scratch": [
+            "/home/fynnm/full_models/2025-06-30-23-48-16",
+            "/home/fynnm/full_models/2025-07-03-23-13-24"
+        ]
     }
     plot_normalized_learning_curves(run_dirs_dict)

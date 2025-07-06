@@ -11,8 +11,8 @@ from custom_environment import CustomEnvironment, Agent
 from algorithms import load_model, get_model
 from helpers import convert_observation, collides_with
 from render import render
-
-
+from collections import defaultdict
+import pickle
 # metrics for each scenario
 # gather: average time between food pickups, overall food collected
 # navigate: average distance to goal, time taken to reach goal
@@ -131,204 +131,151 @@ def create_video_for_run(log_dir, start_step=0, end_step=None, seed=None):
     cv2.destroyAllWindows()
     shutil.rmtree(tmp_dir)
 
-
-def evaluate(seed, steps=480, log_dir=None, model_path=None):
-
-    # Disable standard logging; only enable if log_dir is provided
-    run_config = evaluation_config.copy()
-    run_config["render_enabled"] = bool(log_dir)
+def evaluate(seed, max_steps=480, log_dir=None, model_path=None):
+    """
+    Run one episode under the FULL scenario.
+    Returns per-episode metrics, with None for metrics that didn't occur:
+      - time_alive: steps until prey is eaten (None if not eaten)
+      - time_to_goal: steps until a field is emptied (None if no field cleared)
+      - total_reward: cumulative reward across steps
+      - episode_length: number of steps run (termination or max_steps)
+      - total_food_collected: total food picked up by prey
+      - termination_reason: 'eaten', 'cleared', or 'timeout'
+    """
+    config = evaluation_config.copy()
+    config['render_enabled'] = bool(log_dir)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-    env = CustomEnvironment(config=run_config, seed=seed, folder_path=log_dir)
+    env = CustomEnvironment(config=config, seed=seed, folder_path=log_dir)
     observations, infos = env.reset()
-
-    total_reward = 0
-    total_steps = 0
-    total_distance_to_goal = 0
-    total_distance_to_predator = 0
-    time_alive = 0
-    total_food_collected = 0
-
-    # For food pickup intervals
-    pickup_intervals = []
-    last_pickup_step = 0
 
     if model_path is None:
         raise ValueError("Must provide model_path to evaluate()")
-    if env.scenario == "gather" or env.scenario == "navigate":
-        predators = []
-        for agent in env.agent_data.values():
-            if agent.group == 0:
-                predators.append(agent)
-        for agent in predators:
-            env.remove_agent(agent.ID)
+    prey = next(a for a in env.agent_data.values() if a.group == 1)
+    prey.model.load_weights(model_path)
 
-    prey_agent = [a for a in env.agent_data.values() if a.group == 1][0]
-    prey_agent.model.load_weights(
-        model_path)
+    total_reward = 0.0
+    total_food = 0.0
+    time_alive = None
+    time_to_goal = None
+    termination = 'timeout'
 
-    for step in range(steps):
+    for step in range(max_steps):
         actions = {}
         for agent_id, agent in env.agent_data.items():
             obs = observations[agent_id]
-            action, lstm_state = agent.get_action(obs)
+            action, _ = agent.get_action(obs)
             actions[agent_id] = action
 
-        observations, rewards, terminations, truncations, infos = env.step(
-            actions)
-        total_reward += rewards[prey_agent.ID]
-        total_steps += 1
+        observations, rewards, terminations, truncations, infos = env.step(actions)
+        total_reward += rewards.get(str(prey.ID), 0.0)
+        total_food += infos.get(str(prey.ID), {}).get('food_collected', 0.0)
 
-        done = terminations[str(prey_agent.ID)
-                            ] or truncations[str(prey_agent.ID)]
-        if env.scenario == "navigate":
-            # Compute distance to goal directly
-            prey_pos = env.agent_data[prey_agent.ID].position
-            goal_dist = np.linalg.norm(prey_pos - env.goal_pos)
-            total_distance_to_goal += goal_dist
-            if done:
-                break
+        if terminations.get(str(prey.ID), False):
+            if getattr(prey, 'was_hit_this_step', False):
+                time_alive = step + 1
+                termination = 'eaten'
+            elif env.any_field_depleted:
+                time_to_goal = step + 1
+                termination = 'cleared'
+            break
 
-        elif env.scenario == "flee":
-            # Compute distance to closest predator
-            prey_pos = env.agent_data[prey_agent.ID].position
-            predator_positions = [
-                agent.position for agent in env.agent_data.values() if agent.group == 0]
-            if predator_positions:
-                dists = [np.linalg.norm(pos - prey_pos)
-                         for pos in predator_positions]
-                total_distance_to_predator += min(dists)
-            if not done:
-                time_alive += 1
-            else:
-                break
-
-        elif env.scenario == "gather":
-            # Accumulate food collected from infos
-            food = infos[prey_agent.ID].get("food_collected", 0)
-            if food > 0:
-                interval = step - last_pickup_step
-                pickup_intervals.append(interval)
-                last_pickup_step = step
-            total_food_collected += food
-            if done:
-                break
-
-        elif env.scenario == "full":
-            # Combine navigate and flee metrics
-            prey_pos = env.agent_data[prey_agent.ID].position
-            goal_dist = 0
-            total_distance_to_goal += goal_dist
-            predator_positions = [
-                agent.position for agent in env.agent_data.values() if agent.group == 0]
-            food = infos[prey_agent.ID].get("food_collected", 0)
-            if food > 0:
-                interval = step - last_pickup_step
-                pickup_intervals.append(interval)
-                last_pickup_step = step
-            total_food_collected += food
-            if predator_positions:
-                dists = [np.linalg.norm(pos - prey_pos)
-                         for pos in predator_positions]
-                total_distance_to_predator += min(dists)
-            if not done:
-                time_alive += 1
-            else:
-                break
-    # Compute average time between food pickups
-    if pickup_intervals:
-        avg_time_between_pickups = sum(
-            pickup_intervals) / len(pickup_intervals)
-    else:
-        avg_time_between_pickups = total_steps
-    # For navigate scenario, average time to goal; otherwise zero
-    if env.scenario == "navigate" or env.scenario == "full":
-        avg_time_to_goal = total_steps
-    else:
-        avg_time_to_goal = 0
-
+    ep_length = step + 1
     env.flush_logs()
     return {
-        "total_reward": total_reward,
-        "average_steps": total_steps / steps if steps > 0 else 0.0,
-        "average_distance_to_goal": total_distance_to_goal / total_steps if total_steps > 0 else 0.0,
-        "average_distance_to_predator": total_distance_to_predator / total_steps if total_steps > 0 else 0.0,
-        "time_alive": time_alive,
-        "total_food_collected": total_food_collected,
-        "average_time_between_pickups": avg_time_between_pickups,
-        "average_time_to_goal": avg_time_to_goal
+        'time_alive': time_alive,
+        'time_to_goal': time_to_goal,
+        'total_reward': total_reward,
+        'episode_length': ep_length,
+        'total_food_collected': total_food,
+        'termination_reason': termination
     }
 
+# --------------------------------------------------
+# Aggregation and comparative plotting
+# --------------------------------------------------
+def aggregate_and_plot(models_dict, seeds=range(1000), max_steps=480, log_root='evaluation_logs'):
+    os.makedirs(log_root, exist_ok=True)
+    summary = {}
+    raw_metrics = {}
+    # Collect metrics per label
+    for label, model_paths in models_dict.items():
+        metrics = defaultdict(list)
+        term_counts = {'eaten': 0, 'cleared': 0, 'timeout': 0}
 
-def aggregate_and_log(models_dict, num_runs=100, steps=1000, top_k=5, log_root="evaluation_logs"):
-    os.makedirs("evaluate_comparison", exist_ok=True)
-    all_model_results = {}
+        for model_path in model_paths:
+            for seed in seeds:
+                result = evaluate(
+                    seed,
+                    max_steps,
+                    log_dir=os.path.join(log_root, label, f'run_{seed}'),
+                    model_path=model_path
+                )
+                # time metrics
+                if result['time_alive'] is not None:
+                    metrics['time_alive'].append(result['time_alive'])
+                if result['time_to_goal'] is not None:
+                    metrics['time_to_goal'].append(result['time_to_goal'])
+                # reward per step
+                rpt = result['total_reward'] / result['episode_length']
+                metrics['reward_per_step'].append(rpt)
+                # other metrics
+                metrics['episode_length'].append(result['episode_length'])
+                metrics['total_food_collected'].append(result['total_food_collected'])
+                term_counts[result['termination_reason']] += 1
+        raw_metrics[label] = {'metrics': metrics, 'termination_counts': term_counts}
+        summary[label] = {
+            'avg_time_alive': np.mean(metrics['time_alive']) if metrics['time_alive'] else None,
+            'avg_time_to_goal': np.mean(metrics['time_to_goal']) if metrics['time_to_goal'] else None,
+            'avg_reward_per_step': np.mean(metrics['reward_per_step']),
+            'avg_episode_length': np.mean(metrics['episode_length']),
+            'sum_food_collected': np.sum(metrics['total_food_collected']),
+            'termination_counts': term_counts
+        }
+    save_path = os.path.join(log_root, 'evaluation_data.pkl')
+    with open(save_path, 'wb') as f:
+        pickle.dump({'summary': summary, 'raw_metrics': raw_metrics}, f)
+    print(f"Saved aggregated data to {save_path}")
+    labels = list(summary.keys())
+    # Comparative bar charts for each metric
+    comp_metrics = [
+        ('avg_time_alive', 'Average Time Alive'),
+        ('avg_time_to_goal', 'Average Time to Goal'),
+        ('avg_reward_per_step', 'Average Reward per Step'),
+        ('avg_episode_length', 'Average Episode Length'),
+        ('sum_food_collected', 'Total Food Collected')
+    ]
 
-    for label, model_path in models_dict.items():
-        model_name = os.path.splitext(os.path.basename(model_path))[0]
-        model_dir = os.path.join(log_root, model_name)
-        os.makedirs(model_dir, exist_ok=True)
-        results = []
-        for seed in range(num_runs):
-            run_log_dir = os.path.join(model_dir, f"run_{seed}")
-            res = evaluate(seed, steps, log_dir=run_log_dir,
-                           model_path=model_path)
-            results.append((seed, res))
-        metrics_sum = {}
-        for _, res in results:
-            for k, v in res.items():
-                metrics_sum[k] = metrics_sum.get(k, 0) + v
-        avg_metrics = {k: metrics_sum[k]/num_runs for k in metrics_sum}
-        all_model_results[label] = avg_metrics
-
-        metrics_file = os.path.join(model_dir, "metrics.txt")
-        with open(metrics_file, "w") as mf:
-            mf.write(f"Model: {model_path}\n")
-            mf.write(f"Config: {evaluation_config}\n")
-            mf.write(f"Seeds: {list(range(num_runs))}\n")
-            mf.write("Average Metrics:\n")
-            for k, v in avg_metrics.items():
-                mf.write(f"{k}: {v}\n")
-
-        scenario = evaluation_config["scenario"]
-        if scenario == "flee":
-            results.sort(key=lambda x: x[1]["time_alive"], reverse=True)
-        elif scenario in ("gather", "navigate"):
-            results.sort(key=lambda x: x[1]["average_steps"])
-        elif scenario == "full":
-            results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
-        else:
-            results.sort(key=lambda x: x[1]["total_reward"], reverse=True)
-
-        top_runs = results[:top_k]
-        video_dir = os.path.join(model_dir, "videos")
-        os.makedirs(video_dir, exist_ok=True)
-        render = False
-        if render:
-            for seed, _ in top_runs:
-                print(f"Creating video for run {seed} in {model_dir}")
-                run_dir = os.path.join(model_dir, f"run_{seed}")
-                create_video_for_run(run_dir, start_step=0,
-                                     end_step=steps, seed=seed)
-
-    for metric in all_model_results[list(models_dict.keys())[0]].keys():
-        labels = list(all_model_results.keys())
-        values = [all_model_results[label][metric] for label in labels]
+    for key, title in comp_metrics:
+        values = [summary[label][key] or 0 for label in labels]
         plt.figure()
         plt.bar(labels, values)
-        plt.ylabel(metric)
-        plt.title(f'Metric Comparison: {metric}')
+        plt.ylabel(title)
+        plt.title(f'{title} by Model Group')
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig(f"evaluate_comparison/{metric}_comparison.png")
+        plt.savefig(os.path.join(log_root, f'{key}_comparison.png'))
         plt.close()
+
+    # Comparative pie charts for termination reasons per label
+    for label in labels:
+        counts = list(summary[label]['termination_counts'].values())
+        reasons = list(summary[label]['termination_counts'].keys())
+        plt.figure()
+        plt.pie(counts, labels=reasons, autopct='%1.1f%%', startangle=90)
+        plt.title(f'Termination Breakdown: {label}')
+        plt.tight_layout()
+        plt.savefig(os.path.join(log_root, f'{label}_termination_pie.png'))
+        plt.close()
+
+    return summary
+
 
 
 if __name__ == "__main__":
     evaluation_config = {
         "map_size": 100,
         "base_population_per_group": 1,
-        "reproduction_cooldown": 100,
         "max_age": 480,
         "scenario": "full",
         "map_config": {
@@ -337,15 +284,15 @@ if __name__ == "__main__":
             "Field": 1,
             "Forest": 0,
             "Field_food_range": [10, 20],
-            "Field_base_radius": 12,
-            "Field_max_food": 25,
+            "Field_base_radius": 15,
+            "Field_max_food": 35,
             "River_base_radius": 5,
             "Rock_base_radius": 5,
         },
         "render_enabled": True,
         "predator_fov": 120,
         "prey_fov": 180,
-        "vision_range": 20,
+        "vision_range": 35,
         "vision_rays": 15,
         "agent_detection_radius": 1,
         "agent_collision_radius": 2,
@@ -357,8 +304,20 @@ if __name__ == "__main__":
         "max_agent_count": 2,
     }
     models_dict = {
-        "179": "/Users/fynnmadrian/Downloads/179.weights.h5",
-        "215": "/Users/fynnmadrian/Downloads/215.weights.h5",
-        "local": "logs/2025-06-30-23-48-16/models/prey/agent_1_model_5000000.weights.h5",
+    "Flee": [
+        "/home/fynnm/full_models/179/2025-07-01-18-22-24/models/prey/agent_1_model_5000000.weights.h5",
+        "/home/fynnm/full_models/179/2025-07-02-14-41-52/models/prey/agent_1_model_5000000.weights.h5",
+    ],
+    "Navigate": [
+        "/home/fynnm/full_models/215/2025-07-01-18-25-14/models/prey/agent_1_model_5000000.weights.h5",
+        "/home/fynnm/full_models/215/2025-07-02-14-46-48/models/prey/agent_1_model_5000000.weights.h5",
+    ],
+    "Explore": [
+        "/home/fynnm/full_models/models_mac/2025-07-02-14-41-30/models/prey/agent_1_model_5000000.weights.h5",
+        "/home/fynnm/full_models/models_mac/2025-07-03-22-53-28/models/prey/agent_1_model_5000000.weights.h5",
+    ],
+    "Scratch": ["/home/fynnm/full_models/2025-06-30-23-48-16/full_from_scratch_new.weights.h5",
+    "/home/fynnm/full_models/2025-07-03-23-13-24/models/prey/agent_1_model_5000000.weights.h5"]
     }
-    aggregate_and_log(models_dict)
+
+    aggregate_and_plot(models_dict)
